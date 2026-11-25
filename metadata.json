@@ -1,0 +1,6 @@
+{
+  "name": "MaskFrame",
+  "description": "Offline-first photo and video privacy editor with ML Kit face detection, multi-mode masking, custom watermarks, and trim/cut export.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
