@@ -31,6 +31,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.ui.EditorWorkspaceScreen
 import com.example.ui.LaunchStudioScreen
+import com.example.ui.components.BatchExportSheet
 import com.example.ui.components.ExportBottomSheet
 import com.example.ui.theme.MaskFrameTheme
 import com.example.viewmodel.EditorViewModel
@@ -58,12 +59,20 @@ fun MaskFrameApp(
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
 
-    // Zero-permission Android Photo Picker launchers (Media, Sticker, Watermark Logo)
+    // Zero-permission Android Photo Picker launchers (Single, Batch Multi-Select, Sticker, Logo)
     val mediaPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri != null) {
             viewModel.loadMedia(uri)
+        }
+    }
+
+    val batchPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = 25)
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            viewModel.openBatchSelection(uris)
         }
     }
 
@@ -89,7 +98,7 @@ fun MaskFrameApp(
         viewModel.consumeSnackbar()
     }
 
-    val shareMedia: (Uri, String) -> Unit = { uri, mimeType ->
+    val shareSingleMedia: (Uri, String) -> Unit = { uri, mimeType ->
         val intent = Intent(Intent.ACTION_SEND).apply {
             type = mimeType
             putExtra(Intent.EXTRA_STREAM, uri)
@@ -97,6 +106,21 @@ fun MaskFrameApp(
         }
         runCatching {
             context.startActivity(Intent.createChooser(intent, "Share Exported Media"))
+        }
+    }
+
+    val shareMultipleMedia: (List<Uri>) -> Unit = { uris ->
+        if (uris.size == 1) {
+            shareSingleMedia(uris.first(), "*/*")
+        } else if (uris.isNotEmpty()) {
+            val intent = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+                type = "*/*"
+                putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            runCatching {
+                context.startActivity(Intent.createChooser(intent, "Share Batch Exports"))
+            }
         }
     }
 
@@ -110,9 +134,17 @@ fun MaskFrameApp(
         }
     }
 
+    val launchBatchPicker: () -> Unit = {
+        batchPickerLauncher.launch(
+            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
+        )
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         if (uiState.mediaAsset == null) {
             LaunchStudioScreen(
+                autoDetectAndBlurEnabled = uiState.autoDetectAndBlurOnImport,
+                onToggleAutoDetectAndBlur = viewModel::setAutoDetectAndBlurOnImport,
                 onPickAllMedia = {
                     mediaPickerLauncher.launch(
                         PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
@@ -127,26 +159,23 @@ fun MaskFrameApp(
                     mediaPickerLauncher.launch(
                         PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
                     )
-                }
+                },
+                onStartBatchPick = launchBatchPicker
             )
         } else {
             EditorWorkspaceScreen(
                 uiState = uiState,
                 onCloseEditor = viewModel::closeEditor,
-                onChangeMedia = {
-                    mediaPickerLauncher.launch(
-                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
-                    )
-                },
                 onUndo = viewModel::undo,
                 onRedo = viewModel::redo,
                 onResetEdits = viewModel::resetEdits,
                 onOpenExport = viewModel::openExportSheet,
                 onSelectTab = viewModel::selectTab,
-                onSetComparingOriginal = viewModel::setComparingOriginal,
+                onToggleComparingOriginal = viewModel::toggleComparingOriginal,
                 onToggleMute = viewModel::toggleMute,
+                onToggleAutoDetectOnImport = viewModel::setAutoDetectAndBlurOnImport,
                 onSelectAccuracy = viewModel::setScanAccuracy,
-                onScanFaces = viewModel::scanFaces,
+                onAutoDetectAndBlur = viewModel::autoDetectAndBlur,
                 onCancelScan = viewModel::cancelFaceScan,
                 onAddManualBox = viewModel::addManualBox,
                 onSetApplyToAll = viewModel::setApplyToAllFaces,
@@ -163,7 +192,7 @@ fun MaskFrameApp(
                 },
                 onStickerScaleChange = viewModel::setStickerScale,
                 onSelectManualBox = viewModel::selectManualBox,
-                onBeginGestureEdit = viewModel::beginGestureEdit,
+                onEndContinuousEdit = viewModel::endContinuousEdit,
                 onMoveManualBox = viewModel::moveManualBox,
                 onResizeManualBox = viewModel::resizeManualBox,
                 onDeleteManualBox = viewModel::deleteManualBox,
@@ -196,10 +225,28 @@ fun MaskFrameApp(
             onSelectVideoQuality = viewModel::setVideoExportQuality,
             onSelectImageFormat = viewModel::setImageExportFormat,
             onStartExport = viewModel::startExport,
+            onApplyToBatch = launchBatchPicker,
             onCancelExport = viewModel::cancelExport,
             onDismiss = viewModel::dismissExportSheet,
-            onShareExport = shareMedia,
+            onShareExport = shareSingleMedia,
             onOpenExport = openMedia
+        )
+
+        BatchExportSheet(
+            uiState = uiState,
+            onSelectMaskMode = viewModel::setMaskMode,
+            onBlurIntensityChange = viewModel::setBlurIntensity,
+            onPixelSizeChange = viewModel::setPixelBlockSize,
+            onSliderFinished = viewModel::endContinuousEdit,
+            onSelectVideoQuality = viewModel::setVideoExportQuality,
+            onSelectImageFormat = viewModel::setImageExportFormat,
+            onSetIncludeWatermark = viewModel::setBatchIncludeWatermark,
+            onRemoveItem = viewModel::removeBatchItem,
+            onPickDifferentBatch = launchBatchPicker,
+            onStartBatch = viewModel::startBatchExport,
+            onCancelBatch = viewModel::cancelBatchExport,
+            onDismiss = viewModel::dismissBatchSheet,
+            onShareAll = shareMultipleMedia
         )
 
         SnackbarHost(

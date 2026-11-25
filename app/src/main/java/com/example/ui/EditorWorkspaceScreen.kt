@@ -30,15 +30,16 @@ import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.BrandingWatermark
+import androidx.compose.material.icons.filled.Compare
 import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FaceRetouchingOff
 import androidx.compose.material.icons.filled.Forward5
 import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.PermMedia
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay5
 import androidx.compose.material.icons.filled.RestartAlt
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.outlined.BrandingWatermark
 import androidx.compose.material.icons.outlined.ContentCut
 import androidx.compose.material.icons.outlined.FaceRetouchingOff
@@ -63,7 +64,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
@@ -93,16 +93,16 @@ import kotlin.math.roundToLong
 fun EditorWorkspaceScreen(
     uiState: EditorUiState,
     onCloseEditor: () -> Unit,
-    onChangeMedia: () -> Unit,
     onUndo: () -> Unit,
     onRedo: () -> Unit,
     onResetEdits: () -> Unit,
     onOpenExport: () -> Unit,
     onSelectTab: (EditorTab) -> Unit,
-    onSetComparingOriginal: (Boolean) -> Unit,
+    onToggleComparingOriginal: () -> Unit,
     onToggleMute: () -> Unit,
+    onToggleAutoDetectOnImport: (Boolean) -> Unit,
     onSelectAccuracy: (ScanAccuracy) -> Unit,
-    onScanFaces: () -> Unit,
+    onAutoDetectAndBlur: () -> Unit,
     onCancelScan: () -> Unit,
     onAddManualBox: () -> Unit,
     onSetApplyToAll: (Boolean) -> Unit,
@@ -115,7 +115,7 @@ fun EditorWorkspaceScreen(
     onPickSticker: () -> Unit,
     onStickerScaleChange: (Float) -> Unit,
     onSelectManualBox: (String?) -> Unit,
-    onBeginGestureEdit: () -> Unit,
+    onEndContinuousEdit: () -> Unit,
     onMoveManualBox: (String, Float, Float) -> Unit,
     onResizeManualBox: (String, Float, Float) -> Unit,
     onDeleteManualBox: (String) -> Unit,
@@ -169,7 +169,6 @@ fun EditorWorkspaceScreen(
     val latestTrim by rememberUpdatedState(uiState.trimCutConfig)
     val latestPlaybackCallback by rememberUpdatedState(onUpdatePlaybackState)
 
-    // Poll ExoPlayer smoothly, clamp to trim bounds, and auto-skip cut segments
     LaunchedEffect(exoPlayer) {
         if (exoPlayer == null) return@LaunchedEffect
         while (true) {
@@ -218,36 +217,25 @@ fun EditorWorkspaceScreen(
         }
     }
 
-    val exportBadge = if (isVideo) {
-        when (uiState.videoExportQuality) {
-            com.example.model.VideoExportQuality.ORIGINAL -> "ORIG"
-            com.example.model.VideoExportQuality.HD_1080P -> "1080p"
-            com.example.model.VideoExportQuality.COMPACT_720P -> "720p"
-        }
-    } else {
-        uiState.imageExportFormat.extension.uppercase()
-    }
-
     Column(
         modifier = modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
-        // 1. Pro Studio Top Bar with Undo/Redo + Resolution Badge + Export Pill
-        EditorTopBar(
-            resolutionBadge = "${asset.width}×${asset.height}",
-            exportBadge = exportBadge,
+        // 1. Minimalist Top Bar: Back | Undo / Redo | Before-After Toggle | Reset | Export
+        MinimalEditorTopBar(
+            isComparingOriginal = uiState.isComparingOriginal,
             canUndo = uiState.canUndo,
             canRedo = uiState.canRedo,
             onBack = onCloseEditor,
             onUndo = onUndo,
             onRedo = onRedo,
-            onChangeMedia = onChangeMedia,
+            onToggleCompare = onToggleComparingOriginal,
             onResetEdits = onResetEdits,
             onExport = onOpenExport
         )
 
-        // 2. Adaptive Workspace (Portrait NLE Stack vs Expanded Tablet Split Studio)
+        // 2. Adaptive Workspace
         BoxWithConstraints(
             modifier = Modifier
                 .weight(1f)
@@ -264,8 +252,9 @@ fun EditorWorkspaceScreen(
                     when (tab) {
                         EditorTab.FACE_MASK -> FaceMaskPanel(
                             uiState = uiState,
+                            onToggleAutoDetectOnImport = onToggleAutoDetectOnImport,
                             onSelectAccuracy = onSelectAccuracy,
-                            onScanFaces = onScanFaces,
+                            onAutoDetectAndBlur = onAutoDetectAndBlur,
                             onCancelScan = onCancelScan,
                             onAddManualBox = onAddManualBox,
                             onSetApplyToAll = onSetApplyToAll,
@@ -276,7 +265,8 @@ fun EditorWorkspaceScreen(
                             onSolidColorChange = onSolidColorChange,
                             onEmojiSelected = onEmojiSelected,
                             onPickSticker = onPickSticker,
-                            onStickerScaleChange = onStickerScaleChange
+                            onStickerScaleChange = onStickerScaleChange,
+                            onSliderFinished = onEndContinuousEdit
                         )
 
                         EditorTab.WATERMARK -> WatermarkPanel(
@@ -288,7 +278,8 @@ fun EditorWorkspaceScreen(
                             onPickLogo = onPickWatermarkLogo,
                             onLogoScaleChange = onWatermarkLogoScaleChange,
                             onOpacityChange = onWatermarkOpacityChange,
-                            onSelectPreset = onSelectWatermarkPreset
+                            onSelectPreset = onSelectWatermarkPreset,
+                            onSliderFinished = onEndContinuousEdit
                         )
 
                         EditorTab.TRIM_CUT -> TrimCutPanel(
@@ -300,6 +291,7 @@ fun EditorWorkspaceScreen(
                             onAddCutSegment = onAddCutSegment,
                             onUpdateCutSegment = onUpdateCutSegment,
                             onRemoveCutSegment = onRemoveCutSegment,
+                            onSliderFinished = onEndContinuousEdit,
                             onSeekTo = seekTo
                         )
                     }
@@ -318,16 +310,15 @@ fun EditorWorkspaceScreen(
                             exoPlayer = exoPlayer,
                             onToggleFaceSelection = onToggleFaceTrack,
                             onSelectManualBox = onSelectManualBox,
-                            onBeginGestureEdit = onBeginGestureEdit,
+                            onEndContinuousEdit = onEndContinuousEdit,
                             onMoveManualBox = onMoveManualBox,
                             onResizeManualBox = onResizeManualBox,
                             onDeleteManualBox = onDeleteManualBox,
                             onMoveWatermark = onMoveWatermark,
-                            onSetComparingOriginal = onSetComparingOriginal,
                             modifier = Modifier.weight(1f)
                         )
                         if (isVideo) {
-                            ProVideoTransportDeck(
+                            MinimalVideoTransportDeck(
                                 isPlaying = uiState.isPlaying,
                                 isMuted = uiState.isMuted,
                                 currentMs = uiState.currentPlaybackMs,
@@ -358,17 +349,16 @@ fun EditorWorkspaceScreen(
                         exoPlayer = exoPlayer,
                         onToggleFaceSelection = onToggleFaceTrack,
                         onSelectManualBox = onSelectManualBox,
-                        onBeginGestureEdit = onBeginGestureEdit,
+                        onEndContinuousEdit = onEndContinuousEdit,
                         onMoveManualBox = onMoveManualBox,
                         onResizeManualBox = onResizeManualBox,
                         onDeleteManualBox = onDeleteManualBox,
                         onMoveWatermark = onMoveWatermark,
-                        onSetComparingOriginal = onSetComparingOriginal,
                         modifier = Modifier.weight(1f)
                     )
 
                     if (isVideo) {
-                        ProVideoTransportDeck(
+                        MinimalVideoTransportDeck(
                             isPlaying = uiState.isPlaying,
                             isMuted = uiState.isMuted,
                             currentMs = uiState.currentPlaybackMs,
@@ -387,7 +377,7 @@ fun EditorWorkspaceScreen(
                         color = MaterialTheme.colorScheme.surface,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(276.dp)
+                            .height(272.dp)
                     ) {
                         inspectorContent(Modifier.fillMaxSize())
                     }
@@ -395,7 +385,7 @@ fun EditorWorkspaceScreen(
             }
         }
 
-        // 3. Bottom Studio Tool Dock (Edge-to-edge navigation bar safe)
+        // 3. Minimal Bottom Navigation Bar (Edge-to-edge safe)
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         NavigationBar(
             containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -459,28 +449,29 @@ fun EditorWorkspaceScreen(
 }
 
 @Composable
-private fun EditorTopBar(
-    resolutionBadge: String,
-    exportBadge: String,
+private fun MinimalEditorTopBar(
+    isComparingOriginal: Boolean,
     canUndo: Boolean,
     canRedo: Boolean,
     onBack: () -> Unit,
     onUndo: () -> Unit,
     onRedo: () -> Unit,
-    onChangeMedia: () -> Unit,
+    onToggleCompare: () -> Unit,
     onResetEdits: () -> Unit,
     onExport: () -> Unit
 ) {
+    val primary = MaterialTheme.colorScheme.primary
     Surface(
-        color = Color(0xFF0C1018),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
         modifier = Modifier.fillMaxWidth()
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .statusBarsPadding()
-                .padding(horizontal = 6.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(2.dp)
         ) {
             IconButton(
                 onClick = onBack,
@@ -493,23 +484,6 @@ private fun EditorTopBar(
                 )
             }
 
-            // Compact Technical Spec Pill
-            Surface(
-                shape = RoundedCornerShape(7.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-            ) {
-                Text(
-                    text = resolutionBadge,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp)
-                )
-            }
-
-            Spacer(modifier = Modifier.weight(1f))
-
-            // Pro Undo / Redo Buttons
             IconButton(
                 onClick = onUndo,
                 enabled = canUndo,
@@ -540,18 +514,39 @@ private fun EditorTopBar(
                 )
             }
 
-            IconButton(
-                onClick = onChangeMedia,
+            Spacer(modifier = Modifier.weight(1f))
+
+            // Prominent Before / After Toggle Pill
+            Surface(
+                onClick = onToggleCompare,
+                shape = CircleShape,
+                color = if (isComparingOriginal) primary else MaterialTheme.colorScheme.surfaceContainerHigh,
+                border = BorderStroke(
+                    1.dp,
+                    if (isComparingOriginal) primary else MaterialTheme.colorScheme.outlineVariant
+                ),
                 modifier = Modifier
-                    .size(40.dp)
-                    .testTag("change_media_button")
+                    .height(36.dp)
+                    .testTag("compare_original_button")
             ) {
-                Icon(
-                    imageVector = Icons.Filled.PermMedia,
-                    contentDescription = stringResource(R.string.action_change_media),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(19.dp)
-                )
+                Row(
+                    modifier = Modifier.padding(horizontal = 11.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    Icon(
+                        imageVector = if (isComparingOriginal) Icons.Filled.Visibility else Icons.Filled.Compare,
+                        contentDescription = stringResource(R.string.cd_compare_original),
+                        tint = if (isComparingOriginal) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.size(15.dp)
+                    )
+                    Text(
+                        text = if (isComparingOriginal) stringResource(R.string.action_before) else stringResource(R.string.action_after),
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (isComparingOriginal) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
+                    )
+                }
             }
 
             IconButton(
@@ -568,13 +563,11 @@ private fun EditorTopBar(
                 )
             }
 
-            Spacer(modifier = Modifier.width(4.dp))
-
             Button(
                 onClick = onExport,
                 shape = RoundedCornerShape(10.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
+                    containerColor = primary,
                     contentColor = MaterialTheme.colorScheme.onPrimary
                 ),
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
@@ -589,7 +582,7 @@ private fun EditorTopBar(
                 )
                 Spacer(modifier = Modifier.width(5.dp))
                 Text(
-                    text = exportBadge,
+                    text = stringResource(R.string.action_export),
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.Bold
                 )
@@ -599,7 +592,7 @@ private fun EditorTopBar(
 }
 
 @Composable
-private fun ProVideoTransportDeck(
+private fun MinimalVideoTransportDeck(
     isPlaying: Boolean,
     isMuted: Boolean,
     currentMs: Long,
@@ -614,20 +607,19 @@ private fun ProVideoTransportDeck(
     val primary = MaterialTheme.colorScheme.primary
 
     Surface(
-        color = Color(0xFF0C1018),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 4.dp)
+                .padding(horizontal = 14.dp, vertical = 4.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                // Live Tabular Timecode
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         text = formatTimecode(currentMs),
@@ -639,7 +631,6 @@ private fun ProVideoTransportDeck(
                     )
                 }
 
-                // Centered Precision Playback Cluster
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -691,7 +682,6 @@ private fun ProVideoTransportDeck(
                     }
                 }
 
-                // Audio Mute Toggle
                 IconButton(
                     onClick = onToggleMute,
                     modifier = Modifier
@@ -707,7 +697,6 @@ private fun ProVideoTransportDeck(
                 }
             }
 
-            // Sleek Scrubber Bar
             Slider(
                 value = (currentMs.toFloat() / safeDuration).coerceIn(0f, 1f),
                 onValueChange = { frac -> onSeek((frac * safeDuration).roundToLong()) },

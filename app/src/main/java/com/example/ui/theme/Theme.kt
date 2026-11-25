@@ -7,44 +7,44 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.unit.dp
 
-private val MaskFrameDarkColorScheme = darkColorScheme(
-    primary = ElectricCyan,
-    onPrimary = CyanInk,
-    primaryContainer = CyanContainer,
-    onPrimaryContainer = OnCyanContainer,
-    secondary = SlateSteel,
-    onSecondary = OnSlateSteel,
-    secondaryContainer = SlateContainer,
-    onSecondaryContainer = OnSlateContainer,
-    tertiary = SignalCrimson,
-    onTertiary = OnSignalCrimson,
-    tertiaryContainer = CrimsonContainer,
-    onTertiaryContainer = OnCrimsonContainer,
-    background = ObsidianCanvas,
+private val MaskFrameMinimalDarkScheme = darkColorScheme(
+    primary = WarmAmber,
+    onPrimary = AmberInk,
+    primaryContainer = AmberContainer,
+    onPrimaryContainer = OnAmberContainer,
+    secondary = GraphiteMist,
+    onSecondary = OnGraphiteMist,
+    secondaryContainer = MistContainer,
+    onSecondaryContainer = OnMistContainer,
+    tertiary = StudioRed,
+    onTertiary = OnStudioRed,
+    tertiaryContainer = StudioRedContainer,
+    onTertiaryContainer = OnStudioRedContainer,
+    background = GraphiteCanvas,
     onBackground = StudioTextPrimary,
-    surface = ObsidianSurface,
+    surface = GraphiteSurface,
     onSurface = StudioTextPrimary,
-    surfaceVariant = ObsidianSurfaceVariant,
+    surfaceVariant = GraphiteSurfaceVariant,
     onSurfaceVariant = StudioTextSecondary,
-    surfaceContainerLowest = ObsidianCanvas,
-    surfaceContainerLow = ObsidianContainerLow,
-    surfaceContainer = ObsidianContainer,
-    surfaceContainerHigh = ObsidianContainerHigh,
-    surfaceContainerHighest = ObsidianContainerHighest,
+    surfaceContainerLowest = GraphiteMonitor,
+    surfaceContainerLow = GraphiteContainerLow,
+    surfaceContainer = GraphiteContainer,
+    surfaceContainerHigh = GraphiteContainerHigh,
+    surfaceContainerHighest = GraphiteContainerHighest,
     outline = StudioOutline,
     outlineVariant = StudioOutlineVariant,
-    error = SignalCrimson,
-    onError = OnSignalCrimson,
-    errorContainer = CrimsonContainer,
-    onErrorContainer = OnCrimsonContainer
+    error = StudioRed,
+    onError = OnStudioRed,
+    errorContainer = StudioRedContainer,
+    onErrorContainer = OnStudioRedContainer
 )
 
 private val MaskFrameShapes = Shapes(
     extraSmall = RoundedCornerShape(6.dp),
     small = RoundedCornerShape(10.dp),
-    medium = RoundedCornerShape(14.dp),
-    large = RoundedCornerShape(20.dp),
-    extraLarge = RoundedCornerShape(28.dp)
+    medium = RoundedCornerShape(12.dp),
+    large = RoundedCornerShape(18.dp),
+    extraLarge = RoundedCornerShape(24.dp)
 )
 
 @Composable
@@ -52,7 +52,7 @@ fun MaskFrameTheme(
     content: @Composable () -> Unit
 ) {
     MaterialTheme(
-        colorScheme = MaskFrameDarkColorScheme,
+        colorScheme = MaskFrameMinimalDarkScheme,
         typography = MaskFrameTypography,
         shapes = MaskFrameShapes,
         content = content

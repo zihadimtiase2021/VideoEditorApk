@@ -22,9 +22,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Compare
 import androidx.compose.material.icons.filled.OpenInFull
-import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -45,7 +44,6 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
-import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -66,6 +64,7 @@ import com.example.R
 import com.example.model.EditorTab
 import com.example.model.EditorUiState
 import com.example.model.FaceMaskConfig
+import com.example.model.FaceScanState
 import com.example.model.ManualMaskBox
 import com.example.model.MaskMode
 import com.example.model.MediaType
@@ -83,12 +82,11 @@ fun PreviewStage(
     exoPlayer: ExoPlayer?,
     onToggleFaceSelection: (Int) -> Unit,
     onSelectManualBox: (String?) -> Unit,
-    onBeginGestureEdit: () -> Unit,
+    onEndContinuousEdit: () -> Unit,
     onMoveManualBox: (String, Float, Float) -> Unit,
     onResizeManualBox: (String, Float, Float) -> Unit,
     onDeleteManualBox: (String) -> Unit,
     onMoveWatermark: (Float, Float) -> Unit,
-    onSetComparingOriginal: (Boolean) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val asset = uiState.mediaAsset ?: return
@@ -99,44 +97,26 @@ fun PreviewStage(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(Color(0xFF05070B))
+            .background(MaterialTheme.colorScheme.surfaceContainerLowest)
             .pointerInput(Unit) {
                 detectTapGestures { onSelectManualBox(null) }
             }
-            .padding(horizontal = 12.dp, vertical = 8.dp),
+            .padding(horizontal = 16.dp, vertical = 10.dp),
         contentAlignment = Alignment.Center
     ) {
-        // Subtle calibrated monitor dot-grid texture behind footage
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val spacing = 22.dp.toPx()
-            var x = spacing
-            while (x < size.width) {
-                var y = spacing
-                while (y < size.height) {
-                    drawCircle(
-                        color = Color(0xFF1A2232),
-                        radius = 1.dp.toPx(),
-                        center = Offset(x, y)
-                    )
-                    y += spacing
-                }
-                x += spacing
-            }
-        }
-
-        // Aspect-ratio-locked footage monitor
+        // Distraction-free, aspect-ratio-locked footage monitor
         BoxWithConstraints(
             modifier = Modifier
                 .aspectRatio(asset.aspectRatio.coerceIn(0.45f, 2.4f), matchHeightConstraintsFirst = false)
-                .clip(RoundedCornerShape(14.dp))
+                .clip(RoundedCornerShape(12.dp))
                 .background(Color.Black)
-                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(14.dp))
+                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(12.dp))
                 .testTag("preview_stage_canvas")
         ) {
             val stageWidthPx = with(density) { maxWidth.toPx() }.coerceAtLeast(1f)
             val stageHeightPx = with(density) { maxHeight.toPx() }.coerceAtLeast(1f)
 
-            // 1. Underlying Footage (ExoPlayer for Video, Coil for Image)
+            // 1. Underlying Footage (ExoPlayer or Coil)
             if (asset.type == MediaType.VIDEO && exoPlayer != null) {
                 AndroidView(
                     factory = { ctx ->
@@ -165,9 +145,8 @@ fun PreviewStage(
 
             val timestampMs = if (asset.type == MediaType.VIDEO) uiState.currentPlaybackMs else 0L
 
-            // Only render masks & watermark when NOT comparing original
+            // Render masks & watermark only in edited ("After") view
             if (!uiState.isComparingOriginal) {
-                // 2. Detected Face Overlays with Cinema Reticle Corners
                 for (track in uiState.faceTracks) {
                     val rect = track.rectAt(timestampMs) ?: continue
                     val isMasked = uiState.maskConfig.applyToAllFaces || track.isSelected
@@ -184,7 +163,6 @@ fun PreviewStage(
                     )
                 }
 
-                // 3. Manual Draggable & Resizable Mask Boxes
                 for (box in uiState.manualBoxes) {
                     ManualBoxOverlayItem(
                         box = box,
@@ -195,34 +173,33 @@ fun PreviewStage(
                         stageWidthPx = stageWidthPx,
                         stageHeightPx = stageHeightPx,
                         onSelect = { onSelectManualBox(box.id) },
-                        onDragStart = {
-                            isDraggingOverlay = true
-                            onBeginGestureEdit()
+                        onDragStart = { isDraggingOverlay = true },
+                        onDragEnd = {
+                            isDraggingOverlay = false
+                            onEndContinuousEdit()
                         },
-                        onDragEnd = { isDraggingOverlay = false },
                         onMove = { dx, dy -> onMoveManualBox(box.id, dx, dy) },
                         onResize = { dw, dh -> onResizeManualBox(box.id, dw, dh) },
                         onDelete = { onDeleteManualBox(box.id) }
                     )
                 }
 
-                // 4. Draggable Watermark Overlay
                 if (uiState.watermarkConfig.type != WatermarkType.NONE) {
                     WatermarkOverlayItem(
                         uiState = uiState,
                         isEditable = uiState.activeTab == EditorTab.WATERMARK,
                         stageWidthPx = stageWidthPx,
                         stageHeightPx = stageHeightPx,
-                        onDragStart = {
-                            isDraggingOverlay = true
-                            onBeginGestureEdit()
+                        onDragStart = { isDraggingOverlay = true },
+                        onDragEnd = {
+                            isDraggingOverlay = false
+                            onEndContinuousEdit()
                         },
-                        onDragEnd = { isDraggingOverlay = false },
                         onDrag = onMoveWatermark
                     )
                 }
 
-                // 5. Center Alignment Snap Guides during Drag
+                // Subtle center alignment hairlines while dragging
                 if (isDraggingOverlay) {
                     val wm = uiState.watermarkConfig
                     val selectedBox = uiState.manualBoxes.firstOrNull { it.id == uiState.selectedManualBoxId }
@@ -239,93 +216,81 @@ fun PreviewStage(
                     Canvas(modifier = Modifier.fillMaxSize()) {
                         if (snapX) {
                             drawLine(
-                                color = primaryColor.copy(alpha = 0.85f),
+                                color = primaryColor.copy(alpha = 0.8f),
                                 start = Offset(size.width * 0.5f, 0f),
                                 end = Offset(size.width * 0.5f, size.height),
-                                strokeWidth = 1.5.dp.toPx()
+                                strokeWidth = 1.dp.toPx()
                             )
                         }
                         if (snapY) {
                             drawLine(
-                                color = primaryColor.copy(alpha = 0.85f),
+                                color = primaryColor.copy(alpha = 0.8f),
                                 start = Offset(0f, size.height * 0.5f),
                                 end = Offset(size.width, size.height * 0.5f),
-                                strokeWidth = 1.5.dp.toPx()
+                                strokeWidth = 1.dp.toPx()
                             )
                         }
                     }
                 }
             }
 
-            // 6. Floating Monitor HUD — Top-Left Telemetry Badge
-            val activeMasksCount = uiState.activeMaskRectsAt(timestampMs).size
-            val showHud = uiState.isComparingOriginal || activeMasksCount > 0 || uiState.watermarkConfig.type != WatermarkType.NONE
-            if (showHud) {
+            // Instant ORIGINAL Indicator Badge when viewing Before state
+            if (uiState.isComparingOriginal) {
                 Surface(
                     shape = RoundedCornerShape(8.dp),
-                    color = if (uiState.isComparingOriginal) Color(0xD9FF4D6D) else Color(0xB8090B10),
-                    border = BorderStroke(
-                        1.dp,
-                        if (uiState.isComparingOriginal) Color.White.copy(alpha = 0.4f) else primaryColor.copy(alpha = 0.4f)
-                    ),
+                    color = primaryColor,
+                    border = BorderStroke(1.dp, Color.Black.copy(alpha = 0.15f)),
                     modifier = Modifier
                         .align(Alignment.TopStart)
-                        .padding(8.dp)
+                        .padding(10.dp)
+                        .testTag("original_preview_badge")
                 ) {
                     Text(
-                        text = if (uiState.isComparingOriginal) {
-                            "ORIGINAL"
-                        } else {
-                            buildString {
-                                if (activeMasksCount > 0) {
-                                    append("$activeMasksCount ${if (activeMasksCount == 1) "MASK" else "MASKS"} • ${uiState.maskConfig.mode.label.uppercase()}")
-                                }
-                                if (uiState.watermarkConfig.type != WatermarkType.NONE) {
-                                    if (isNotEmpty()) append(" • ")
-                                    append("WM")
-                                }
-                            }
-                        },
-                        style = TimecodeTextStyle,
-                        color = if (uiState.isComparingOriginal) Color.White else primaryColor,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        text = "ORIGINAL",
+                        style = TimecodeTextStyle.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
                     )
                 }
             }
 
-            // 7. Floating Before/After Compare Button (Bottom-Right of Monitor)
-            val hasAnyEdits = uiState.faceTracks.isNotEmpty() ||
-                uiState.manualBoxes.isNotEmpty() ||
-                uiState.watermarkConfig.type != WatermarkType.NONE
-            if (hasAnyEdits) {
+            // Live Auto-Detect & Blur floating pill on the footage monitor during ML Kit scan
+            val scanState = uiState.faceScanState
+            if (scanState is FaceScanState.Scanning) {
+                val percent = (scanState.progress * 100f).roundToInt().coerceIn(0, 100)
+                val liveFaces = uiState.faceTracks.size
+                val statusLabel = buildString {
+                    append(if (scanState.isAutoImportScan) "Auto-Detect & Blur" else "Scanning Faces")
+                    if (asset.type == MediaType.VIDEO) {
+                        append(" $percent%")
+                    }
+                    if (liveFaces > 0) {
+                        append(" • $liveFaces ${if (liveFaces == 1) "face" else "faces"}")
+                    }
+                }
                 Surface(
-                    onClick = { onSetComparingOriginal(!uiState.isComparingOriginal) },
                     shape = CircleShape,
-                    color = if (uiState.isComparingOriginal) primaryColor else Color(0xBF090B10),
-                    border = BorderStroke(
-                        1.dp,
-                        if (uiState.isComparingOriginal) primaryColor else Color.White.copy(alpha = 0.25f)
-                    ),
+                    color = Color(0xDD14171D),
+                    border = BorderStroke(1.dp, primaryColor.copy(alpha = 0.55f)),
                     modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(8.dp)
-                        .testTag("compare_original_button")
+                        .align(Alignment.BottomCenter)
+                        .padding(10.dp)
+                        .testTag("preview_scanning_pill")
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Icon(
-                            imageVector = if (uiState.isComparingOriginal) Icons.Filled.Visibility else Icons.Filled.Compare,
-                            contentDescription = stringResource(R.string.cd_compare_original),
-                            tint = if (uiState.isComparingOriginal) MaterialTheme.colorScheme.onPrimary else Color.White,
-                            modifier = Modifier.size(15.dp)
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(14.dp),
+                            color = primaryColor,
+                            strokeWidth = 2.dp
                         )
                         Text(
-                            text = if (uiState.isComparingOriginal) "Showing Raw" else "Compare",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (uiState.isComparingOriginal) MaterialTheme.colorScheme.onPrimary else Color.White
+                            text = statusLabel,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Color.White
                         )
                     }
                 }
@@ -373,31 +338,21 @@ private fun FaceOverlayItem(
         }
 
         if (showSelectionChrome) {
-            // Pro cinema corner-bracket tracking reticle
-            val reticleColor = if (isMasked) primaryColor else Color.White.copy(alpha = 0.5f)
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val len = (min(size.width, size.height) * 0.24f).coerceIn(8f, 22f)
-                val sw = if (isMasked) 2.2.dp.toPx() else 1.4.dp.toPx()
-                // Top-Left
-                drawLine(reticleColor, Offset(0f, 0f), Offset(len, 0f), sw, StrokeCap.Round)
-                drawLine(reticleColor, Offset(0f, 0f), Offset(0f, len), sw, StrokeCap.Round)
-                // Top-Right
-                drawLine(reticleColor, Offset(size.width, 0f), Offset(size.width - len, 0f), sw, StrokeCap.Round)
-                drawLine(reticleColor, Offset(size.width, 0f), Offset(size.width, len), sw, StrokeCap.Round)
-                // Bottom-Left
-                drawLine(reticleColor, Offset(0f, size.height), Offset(len, size.height), sw, StrokeCap.Round)
-                drawLine(reticleColor, Offset(0f, size.height), Offset(0f, size.height - len), sw, StrokeCap.Round)
-                // Bottom-Right
-                drawLine(reticleColor, Offset(size.width, size.height), Offset(size.width - len, size.height), sw, StrokeCap.Round)
-                drawLine(reticleColor, Offset(size.width, size.height), Offset(size.width, size.height - len), sw, StrokeCap.Round)
-            }
-
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .border(
+                        width = if (isMasked) 1.25.dp else 1.dp,
+                        color = if (isMasked) primaryColor.copy(alpha = 0.85f) else Color.White.copy(alpha = 0.45f),
+                        shape = RoundedCornerShape(10.dp)
+                    )
+            )
             Surface(
                 shape = RoundedCornerShape(5.dp),
-                color = if (isMasked) primaryColor else Color(0xCC090B10),
+                color = if (isMasked) primaryColor else Color(0xCC14171D),
                 modifier = Modifier
                     .align(Alignment.TopStart)
-                    .padding(3.dp)
+                    .padding(4.dp)
             ) {
                 Text(
                     text = if (isMasked) label else "$label Off",
@@ -471,8 +426,8 @@ private fun ManualBoxOverlayItem(
                 modifier = Modifier
                     .fillMaxSize()
                     .border(
-                        width = if (isSelected) 2.dp else 1.2.dp,
-                        color = if (isSelected) primaryColor else primaryColor.copy(alpha = 0.72f),
+                        width = if (isSelected) 1.5.dp else 1.dp,
+                        color = if (isSelected) primaryColor else primaryColor.copy(alpha = 0.65f),
                         shape = RoundedCornerShape(10.dp)
                     )
             )
@@ -483,8 +438,8 @@ private fun ManualBoxOverlayItem(
                 color = MaterialTheme.colorScheme.error,
                 modifier = Modifier
                     .align(Alignment.TopEnd)
-                    .padding(2.dp)
-                    .size(26.dp)
+                    .padding(3.dp)
+                    .size(24.dp)
                     .testTag("delete_manual_box_button")
             ) {
                 Box(contentAlignment = Alignment.Center) {
@@ -492,7 +447,7 @@ private fun ManualBoxOverlayItem(
                         imageVector = Icons.Filled.Close,
                         contentDescription = stringResource(R.string.cd_delete_box),
                         tint = Color.White,
-                        modifier = Modifier.size(15.dp)
+                        modifier = Modifier.size(14.dp)
                     )
                 }
             }
@@ -502,8 +457,8 @@ private fun ManualBoxOverlayItem(
                 color = primaryColor,
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
-                    .padding(2.dp)
-                    .size(28.dp)
+                    .padding(3.dp)
+                    .size(26.dp)
                     .pointerInput(box.id, stageWidthPx, stageHeightPx) {
                         detectDragGestures(
                             onDragStart = {
@@ -525,7 +480,7 @@ private fun ManualBoxOverlayItem(
                         imageVector = Icons.Filled.OpenInFull,
                         contentDescription = stringResource(R.string.cd_resize_box),
                         tint = MaterialTheme.colorScheme.onPrimary,
-                        modifier = Modifier.size(14.dp)
+                        modifier = Modifier.size(13.dp)
                     )
                 }
             }
@@ -542,7 +497,7 @@ private fun MaskVisualFill(
     modifier: Modifier = Modifier
 ) {
     val density = LocalDensity.current
-    val shape = RoundedCornerShape(12.dp)
+    val shape = RoundedCornerShape(10.dp)
 
     when (maskConfig.mode) {
         MaskMode.GAUSSIAN_BLUR -> {
@@ -553,8 +508,8 @@ private fun MaskVisualFill(
                     .background(
                         Brush.radialGradient(
                             colors = listOf(
-                                Color(0xFFC2DDE8).copy(alpha = alpha),
-                                Color(0xFF283747).copy(alpha = alpha * 0.92f)
+                                Color(0xFFD4CFC7).copy(alpha = alpha),
+                                Color(0xFF333740).copy(alpha = alpha * 0.92f)
                             )
                         )
                     )
@@ -571,11 +526,11 @@ private fun MaskVisualFill(
                     for (c in 0 until cols) {
                         val shade = ((r * 31 + c * 17) % 5)
                         val tileColor = when (shade) {
-                            0 -> Color(0xE01B2432)
-                            1 -> Color(0xE02D3C52)
-                            2 -> Color(0xE0415670)
-                            3 -> Color(0xE0253345)
-                            else -> Color(0xE0556D87)
+                            0 -> Color(0xE01F232B)
+                            1 -> Color(0xE0323844)
+                            2 -> Color(0xE0474E5E)
+                            3 -> Color(0xE0292E38)
+                            else -> Color(0xE05B6273)
                         }
                         drawRect(
                             color = tileColor,
@@ -626,7 +581,7 @@ private fun MaskVisualFill(
                         modifier = Modifier
                             .fillMaxSize()
                             .clip(shape)
-                            .background(Color(0xCC090B10)),
+                            .background(Color(0xCC14171D)),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
@@ -693,11 +648,7 @@ private fun WatermarkOverlayItem(
                     .then(dragModifier)
                     .then(
                         if (isEditable) {
-                            Modifier.border(
-                                1.dp,
-                                primaryColor.copy(alpha = 0.75f),
-                                RoundedCornerShape(8.dp)
-                            )
+                            Modifier.border(1.dp, primaryColor.copy(alpha = 0.7f), RoundedCornerShape(8.dp))
                         } else {
                             Modifier
                         }
@@ -714,7 +665,7 @@ private fun WatermarkOverlayItem(
                     textAlign = TextAlign.Center,
                     style = MaterialTheme.typography.titleMedium.copy(
                         shadow = Shadow(
-                            color = Color.Black.copy(alpha = 0.75f * wm.opacity),
+                            color = Color.Black.copy(alpha = 0.72f * wm.opacity),
                             offset = Offset(0f, 3f),
                             blurRadius = 6f
                         )
@@ -744,11 +695,7 @@ private fun WatermarkOverlayItem(
                         .then(dragModifier)
                         .then(
                             if (isEditable) {
-                                Modifier.border(
-                                    1.dp,
-                                    primaryColor.copy(alpha = 0.75f),
-                                    RoundedCornerShape(8.dp)
-                                )
+                                Modifier.border(1.dp, primaryColor.copy(alpha = 0.7f), RoundedCornerShape(8.dp))
                             } else {
                                 Modifier
                             }

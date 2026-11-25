@@ -4,7 +4,6 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -45,7 +44,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -61,7 +59,7 @@ import com.example.model.EditorUiState
 import com.example.model.MediaType
 import com.example.model.WatermarkType
 import com.example.model.formatTimecode
-import com.example.ui.theme.StudioWarning
+import com.example.ui.theme.StudioSuccess
 import com.example.ui.theme.TimecodeTextStyle
 import kotlin.math.roundToLong
 
@@ -75,6 +73,7 @@ fun TrimCutPanel(
     onAddCutSegment: () -> Unit,
     onUpdateCutSegment: (String, Long, Long) -> Unit,
     onRemoveCutSegment: (String) -> Unit,
+    onSliderFinished: () -> Unit,
     onSeekTo: (Long) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -87,8 +86,8 @@ fun TrimCutPanel(
             contentAlignment = Alignment.Center
         ) {
             Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.surfaceContainer,
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
             ) {
                 Row(
@@ -102,7 +101,7 @@ fun TrimCutPanel(
                         tint = MaterialTheme.colorScheme.primary
                     )
                     Text(
-                        text = "Multi-track Trim & Cut timeline is active for video projects. Use Face Mask or Watermark for still photos.",
+                        text = "Trim & Cut is active for video clips. Use Mask or Watermark for still photos.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -115,17 +114,16 @@ fun TrimCutPanel(
     val trim = uiState.trimCutConfig
     val totalMs = trim.totalDurationMs.coerceAtLeast(1L)
     val primary = MaterialTheme.colorScheme.primary
-    val crimson = MaterialTheme.colorScheme.error
+    val errorRed = MaterialTheme.colorScheme.error
     val currentSeek by rememberUpdatedState(onSeekTo)
 
     Column(
         modifier = modifier
             .fillMaxWidth()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 14.dp, vertical = 10.dp),
+            .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        // 1. NLE Action Bar (Set In, Set Out, Cut, Reset) + Output Duration Metric
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -152,7 +150,7 @@ fun TrimCutPanel(
             NleTimelineActionChip(
                 label = "Cut",
                 icon = Icons.Filled.ContentCut,
-                tint = crimson,
+                tint = errorRed,
                 onClick = onAddCutSegment,
                 modifier = Modifier
                     .weight(1f)
@@ -173,10 +171,10 @@ fun TrimCutPanel(
             }
         }
 
-        // 2. Pro Multi-Track Visual Timeline (Ruler + V1 Video + M1 Mask + W1 Watermark + Continuous Playhead)
+        // Minimal Multi-Track Drag-to-Scrub Filmstrip Timeline
         Surface(
             shape = RoundedCornerShape(12.dp),
-            color = Color(0xFF0A0D13),
+            color = MaterialTheme.colorScheme.surfaceContainerLowest,
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
             modifier = Modifier.fillMaxWidth()
         ) {
@@ -204,19 +202,17 @@ fun TrimCutPanel(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(22.dp)
-                            .background(Color(0xFF101520))
+                            .background(MaterialTheme.colorScheme.surfaceContainerLow)
                             .padding(horizontal = 6.dp)
                     ) {
                         Canvas(modifier = Modifier.fillMaxSize()) {
-                            val majorCount = 5
-                            val minorPerMajor = 4
-                            val totalTicks = majorCount * minorPerMajor
+                            val totalTicks = 20
                             for (i in 0..totalTicks) {
                                 val x = (i.toFloat() / totalTicks) * size.width
-                                val isMajor = i % minorPerMajor == 0
-                                val tickH = if (isMajor) 9.dp.toPx() else 4.dp.toPx()
+                                val isMajor = i % 4 == 0
+                                val tickH = if (isMajor) 8.dp.toPx() else 4.dp.toPx()
                                 drawLine(
-                                    color = if (isMajor) Color(0xFF6B7F9E) else Color(0xFF2B364A),
+                                    color = if (isMajor) Color(0xFF5D6575) else Color(0xFF2B303C),
                                     start = Offset(x, size.height),
                                     end = Offset(x, size.height - tickH),
                                     strokeWidth = if (isMajor) 1.5f else 1f
@@ -245,12 +241,12 @@ fun TrimCutPanel(
                         }
                     }
 
-                    // Track V1 — Video Filmstrip Track
+                    // V1 Video Filmstrip Track
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(50.dp)
-                            .background(Color(0xFF090B10))
+                            .height(48.dp)
+                            .background(MaterialTheme.colorScheme.surfaceContainerLowest)
                     ) {
                         if (uiState.filmstripThumbnails.isNotEmpty()) {
                             Row(modifier = Modifier.fillMaxSize()) {
@@ -268,7 +264,6 @@ fun TrimCutPanel(
                             }
                         }
 
-                        // Trim window, cut regions & grip brackets
                         Canvas(modifier = Modifier.fillMaxSize()) {
                             val startFrac = (trim.trimStartMs.toFloat() / totalMs).coerceIn(0f, 1f)
                             val endFrac = (trim.trimEndMs.toFloat() / totalMs).coerceIn(startFrac, 1f)
@@ -276,17 +271,17 @@ fun TrimCutPanel(
                             val rightX = endFrac * size.width
 
                             if (leftX > 0f) {
-                                drawRect(Color(0xCC07090E), Offset.Zero, Size(leftX, size.height))
+                                drawRect(Color(0xCC090B0E), Offset.Zero, Size(leftX, size.height))
                             }
                             if (rightX < size.width) {
-                                drawRect(Color(0xCC07090E), Offset(rightX, 0f), Size(size.width - rightX, size.height))
+                                drawRect(Color(0xCC090B0E), Offset(rightX, 0f), Size(size.width - rightX, size.height))
                             }
 
                             trim.cutSegments.forEach { seg ->
                                 val cs = (seg.startMs.toFloat() / totalMs).coerceIn(0f, 1f) * size.width
                                 val ce = (seg.endMs.toFloat() / totalMs).coerceIn(0f, 1f) * size.width
                                 if (ce > cs) {
-                                    drawRect(crimson.copy(alpha = 0.55f), Offset(cs, 0f), Size(ce - cs, size.height))
+                                    drawRect(errorRed.copy(alpha = 0.55f), Offset(cs, 0f), Size(ce - cs, size.height))
                                     var hx = cs
                                     while (hx < ce) {
                                         drawLine(
@@ -300,9 +295,8 @@ fun TrimCutPanel(
                                 }
                             }
 
-                            // Cyan bracket frame
-                            drawLine(primary, Offset(leftX, 1.5f), Offset(rightX, 1.5f), 3.5f)
-                            drawLine(primary, Offset(leftX, size.height - 1.5f), Offset(rightX, size.height - 1.5f), 3.5f)
+                            drawLine(primary, Offset(leftX, 1.5f), Offset(rightX, 1.5f), 3f)
+                            drawLine(primary, Offset(leftX, size.height - 1.5f), Offset(rightX, size.height - 1.5f), 3f)
                             drawRoundRect(
                                 color = primary,
                                 topLeft = Offset((leftX - 4f).coerceAtLeast(0f), 0f),
@@ -316,28 +310,16 @@ fun TrimCutPanel(
                                 cornerRadius = CornerRadius(3f, 3f)
                             )
                         }
-
-                        // Track badge V1
-                        Text(
-                            text = "V1",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Color.White.copy(alpha = 0.85f),
-                            modifier = Modifier
-                                .align(Alignment.TopStart)
-                                .padding(4.dp)
-                                .background(Color(0x99090B10), RoundedCornerShape(4.dp))
-                                .padding(horizontal = 4.dp, vertical = 1.dp)
-                        )
                     }
 
-                    // Track M1 — Face & Manual Privacy Mask Span Track
+                    // M1 Mask Track
                     val hasMasks = uiState.faceTracks.isNotEmpty() || uiState.manualBoxes.isNotEmpty()
                     if (hasMasks) {
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(18.dp)
-                                .background(Color(0xFF0E131D))
+                                .background(MaterialTheme.colorScheme.surfaceContainerLow)
                         ) {
                             Canvas(modifier = Modifier.fillMaxSize()) {
                                 val padY = 3.dp.toPx()
@@ -357,7 +339,7 @@ fun TrimCutPanel(
                                             val sx = (firstTs.toFloat() / totalMs).coerceIn(0f, 1f) * size.width
                                             val ex = (lastTs.toFloat() / totalMs).coerceIn(0f, 1f) * size.width
                                             drawRoundRect(
-                                                color = primary.copy(alpha = 0.65f),
+                                                color = primary.copy(alpha = 0.6f),
                                                 topLeft = Offset(sx, padY),
                                                 size = Size((ex - sx).coerceAtLeast(8f), barH),
                                                 cornerRadius = CornerRadius(4f, 4f)
@@ -377,18 +359,18 @@ fun TrimCutPanel(
                         }
                     }
 
-                    // Track W1 — Watermark Track
+                    // W1 Watermark Track
                     if (uiState.watermarkConfig.type != WatermarkType.NONE) {
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(18.dp)
-                                .background(Color(0xFF101622))
+                                .background(MaterialTheme.colorScheme.surfaceContainer)
                         ) {
                             Canvas(modifier = Modifier.fillMaxSize()) {
                                 val padY = 3.dp.toPx()
                                 drawRoundRect(
-                                    color = StudioWarning.copy(alpha = 0.42f),
+                                    color = StudioSuccess.copy(alpha = 0.35f),
                                     topLeft = Offset(0f, padY),
                                     size = Size(size.width, size.height - padY * 2),
                                     cornerRadius = CornerRadius(4f, 4f)
@@ -406,7 +388,6 @@ fun TrimCutPanel(
                     }
                 }
 
-                // Continuous Vertical Playhead Needle with Inverted Triangle Cap across ALL tracks
                 Canvas(modifier = Modifier.matchParentSize()) {
                     val playFrac = (uiState.currentPlaybackMs.toFloat() / totalMs).coerceIn(0f, 1f)
                     val playX = playFrac * size.width
@@ -429,7 +410,6 @@ fun TrimCutPanel(
             }
         }
 
-        // 3. Precision Dual-Handle Trim Range Slider
         Column(verticalArrangement = Arrangement.spacedBy(0.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -458,6 +438,7 @@ fun TrimCutPanel(
                     )
                 },
                 onValueChangeFinished = {
+                    onSliderFinished()
                     onSeekTo(trim.trimStartMs)
                 },
                 colors = SliderDefaults.colors(
@@ -469,21 +450,21 @@ fun TrimCutPanel(
             )
         }
 
-        // 4. Cut Segments Inspector Cards
         if (trim.cutSegments.isNotEmpty()) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    text = "EXCISED SEGMENTS (${trim.cutSegments.size})",
+                    text = "REMOVED CUTS (${trim.cutSegments.size})",
                     style = MaterialTheme.typography.labelSmall,
-                    color = crimson
+                    color = errorRed
                 )
                 trim.cutSegments.forEachIndexed { index, segment ->
                     CutSegmentCard(
                         index = index + 1,
                         segment = segment,
                         totalMs = totalMs,
-                        crimson = crimson,
+                        errorRed = errorRed,
                         onUpdate = { s, e -> onUpdateCutSegment(segment.id, s, e) },
+                        onFinished = onSliderFinished,
                         onDelete = { onRemoveCutSegment(segment.id) }
                     )
                 }
@@ -503,9 +484,9 @@ private fun NleTimelineActionChip(
     OutlinedButton(
         onClick = onClick,
         shape = RoundedCornerShape(10.dp),
-        border = BorderStroke(1.dp, tint.copy(alpha = 0.45f)),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
         colors = ButtonDefaults.outlinedButtonColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            containerColor = MaterialTheme.colorScheme.surfaceContainer,
             contentColor = MaterialTheme.colorScheme.onSurface
         ),
         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
@@ -530,14 +511,15 @@ private fun CutSegmentCard(
     index: Int,
     segment: CutSegment,
     totalMs: Long,
-    crimson: Color,
+    errorRed: Color,
     onUpdate: (Long, Long) -> Unit,
+    onFinished: () -> Unit,
     onDelete: () -> Unit
 ) {
     Surface(
         shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        border = BorderStroke(1.dp, crimson.copy(alpha = 0.45f))
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        border = BorderStroke(1.dp, errorRed.copy(alpha = 0.4f))
     ) {
         Column(
             modifier = Modifier
@@ -564,7 +546,7 @@ private fun CutSegmentCard(
                     Icon(
                         imageVector = Icons.Filled.DeleteOutline,
                         contentDescription = "Remove cut segment",
-                        tint = crimson,
+                        tint = errorRed,
                         modifier = Modifier.size(18.dp)
                     )
                 }
@@ -580,10 +562,11 @@ private fun CutSegmentCard(
                         (range.endInclusive * totalMs).roundToLong()
                     )
                 },
+                onValueChangeFinished = onFinished,
                 colors = SliderDefaults.colors(
-                    thumbColor = crimson,
-                    activeTrackColor = crimson,
-                    inactiveTrackColor = MaterialTheme.colorScheme.surfaceContainerLowest
+                    thumbColor = errorRed,
+                    activeTrackColor = errorRed,
+                    inactiveTrackColor = MaterialTheme.colorScheme.surfaceContainerHighest
                 ),
                 modifier = Modifier.testTag("cut_segment_slider_$index")
             )

@@ -1,7 +1,6 @@
 package com.example.ui
 
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -26,10 +25,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoFixHigh
-import androidx.compose.material.icons.filled.ContentCut
-import androidx.compose.material.icons.filled.FaceRetouchingOff
+import androidx.compose.material.icons.filled.Collections
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Videocam
@@ -38,16 +37,15 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
@@ -56,36 +54,24 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.R
-import com.example.ui.theme.TimecodeTextStyle
 
 @Composable
 fun LaunchStudioScreen(
+    autoDetectAndBlurEnabled: Boolean,
+    onToggleAutoDetectAndBlur: (Boolean) -> Unit,
     onPickAllMedia: () -> Unit,
     onPickVideoOnly: () -> Unit,
     onPickImageOnly: () -> Unit,
+    onStartBatchPick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val primaryColor = MaterialTheme.colorScheme.primary
-    val bgColor = MaterialTheme.colorScheme.background
+    val primary = MaterialTheme.colorScheme.primary
+    val bg = MaterialTheme.colorScheme.background
 
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(bgColor)
-            .drawBehind {
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(
-                            primaryColor.copy(alpha = 0.16f),
-                            Color.Transparent
-                        ),
-                        center = Offset(size.width * 0.5f, size.height * 0.12f),
-                        radius = size.width * 0.9f
-                    ),
-                    radius = size.width * 0.9f,
-                    center = Offset(size.width * 0.5f, size.height * 0.12f)
-                )
-            }
+            .background(bg)
             .statusBarsPadding()
             .navigationBarsPadding(),
         contentAlignment = Alignment.TopCenter
@@ -93,12 +79,12 @@ fun LaunchStudioScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .widthIn(max = 620.dp)
+                .widthIn(max = 560.dp)
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp, vertical = 14.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp)
+                .padding(horizontal = 24.dp, vertical = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp)
         ) {
-            // Pro Studio Top Brand Header
+            // Minimal Brand Header
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -108,198 +94,216 @@ fun LaunchStudioScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Box(
+                    Image(
+                        painter = painterResource(id = R.drawable.img_maskframe_icon_1795569852767),
+                        contentDescription = stringResource(R.string.app_name),
+                        contentScale = ContentScale.Crop,
                         modifier = Modifier
-                            .size(42.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .border(1.dp, primaryColor.copy(alpha = 0.5f), RoundedCornerShape(12.dp))
-                    ) {
-                        Image(
-                            painter = painterResource(id = R.drawable.img_maskframe_icon_1795569852767),
-                            contentDescription = stringResource(R.string.app_name),
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    }
-                    Column {
-                        Text(
-                            text = stringResource(R.string.app_name),
-                            style = MaterialTheme.typography.titleLarge,
-                            color = MaterialTheme.colorScheme.onBackground
-                        )
-                        Text(
-                            text = "PRO PRIVACY NLE",
-                            style = TimecodeTextStyle.copy(color = primaryColor)
-                        )
-                    }
+                            .size(36.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(10.dp))
+                    )
+                    Text(
+                        text = stringResource(R.string.app_name),
+                        style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.onBackground
+                    )
                 }
 
                 Surface(
                     shape = CircleShape,
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    color = MaterialTheme.colorScheme.surfaceContainer,
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(5.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Filled.Lock,
                             contentDescription = null,
-                            tint = primaryColor,
-                            modifier = Modifier.size(13.dp)
+                            tint = primary,
+                            modifier = Modifier.size(12.dp)
                         )
                         Text(
-                            text = "LOCAL GPU",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurface
+                            text = "Offline",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
             }
 
-            // Cinema Viewfinder Hero Card + Embedded New Project Action
-            Box(
+            // Clean Minimal Editorial Hero Card
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(16f / 8.5f)
+                    ) {
+                        Image(
+                            painter = painterResource(id = R.drawable.img_studio_hero_1795569853892),
+                            contentDescription = stringResource(R.string.cd_studio_hero),
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(
+                                    Brush.verticalGradient(
+                                        colors = listOf(
+                                            Color.Transparent,
+                                            MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.72f),
+                                            MaterialTheme.colorScheme.surfaceContainer
+                                        )
+                                    )
+                                )
+                        )
+                    }
+
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 20.dp, end = 20.dp, bottom = 20.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text(
+                                text = "Private Media Editing",
+                                style = MaterialTheme.typography.headlineMedium,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = stringResource(R.string.studio_hero_subtitle),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        Button(
+                            onClick = onPickAllMedia,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(52.dp)
+                                .testTag("pick_media_button"),
+                            shape = RoundedCornerShape(14.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = primary,
+                                contentColor = MaterialTheme.colorScheme.onPrimary
+                            ),
+                            contentPadding = PaddingValues(horizontal = 20.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Add,
+                                contentDescription = null,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = stringResource(R.string.action_open_media),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Auto-Detect & Blur on Import Toggle Card
+            Surface(
+                onClick = { onToggleAutoDetectAndBlur(!autoDetectAndBlurEnabled) },
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                border = BorderStroke(
+                    width = 1.dp,
+                    color = if (autoDetectAndBlurEnabled) primary.copy(alpha = 0.45f) else MaterialTheme.colorScheme.outlineVariant
+                ),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .aspectRatio(16f / 10f)
-                    .clip(RoundedCornerShape(22.dp))
-                    .border(
-                        width = 1.dp,
-                        brush = Brush.linearGradient(
-                            colors = listOf(
-                                primaryColor.copy(alpha = 0.6f),
-                                MaterialTheme.colorScheme.outlineVariant,
-                                primaryColor.copy(alpha = 0.25f)
-                            )
-                        ),
-                        shape = RoundedCornerShape(22.dp)
-                    )
+                    .testTag("home_auto_detect_blur_card")
             ) {
-                Image(
-                    painter = painterResource(id = R.drawable.img_studio_hero_1795569853892),
-                    contentDescription = stringResource(R.string.cd_studio_hero),
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
-
-                // Dark cinema gradient scrim
-                Box(
+                Row(
                     modifier = Modifier
-                        .fillMaxSize()
-                        .background(
-                            Brush.verticalGradient(
-                                colors = listOf(
-                                    bgColor.copy(alpha = 0.25f),
-                                    Color.Transparent,
-                                    bgColor.copy(alpha = 0.78f),
-                                    bgColor.copy(alpha = 0.96f)
-                                )
-                            )
-                        )
-                )
-
-                // Viewfinder corner brackets
-                Canvas(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(14.dp)
-                ) {
-                    val bracketLen = 18.dp.toPx()
-                    val stroke = 2.dp.toPx()
-                    val c = primaryColor.copy(alpha = 0.72f)
-                    // Top-left
-                    drawLine(c, Offset(0f, 0f), Offset(bracketLen, 0f), stroke, StrokeCap.Round)
-                    drawLine(c, Offset(0f, 0f), Offset(0f, bracketLen), stroke, StrokeCap.Round)
-                    // Top-right
-                    drawLine(c, Offset(size.width, 0f), Offset(size.width - bracketLen, 0f), stroke, StrokeCap.Round)
-                    drawLine(c, Offset(size.width, 0f), Offset(size.width, bracketLen), stroke, StrokeCap.Round)
-                }
-
-                // Top technical badge
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = Color(0xAA090B10),
-                    border = BorderStroke(1.dp, primaryColor.copy(alpha = 0.35f)),
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(16.dp)
-                ) {
-                    Text(
-                        text = "ML KIT • MEDIA3 • 4K",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = primaryColor,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                    )
-                }
-
-                // Bottom hero text + Primary New Project Button
-                Column(
-                    modifier = Modifier
-                        .align(Alignment.BottomStart)
                         .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = if (autoDetectAndBlurEnabled) {
+                            MaterialTheme.colorScheme.primaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.surfaceContainerHigh
+                        },
+                        modifier = Modifier.size(40.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Filled.AutoFixHigh,
+                                contentDescription = null,
+                                tint = if (autoDetectAndBlurEnabled) primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
                         Text(
-                            text = "Precision Privacy Studio",
-                            style = MaterialTheme.typography.headlineSmall,
-                            color = MaterialTheme.colorScheme.onBackground
+                            text = stringResource(R.string.auto_detect_blur_title),
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            text = "Track faces, mask frames with GPU shaders, stamp brand logos, and cut clips offline.",
+                            text = stringResource(R.string.auto_detect_blur_subtitle),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
 
-                    Button(
-                        onClick = onPickAllMedia,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(52.dp)
-                            .testTag("pick_media_button"),
-                        shape = RoundedCornerShape(14.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = primaryColor,
-                            contentColor = MaterialTheme.colorScheme.onPrimary
+                    Switch(
+                        checked = autoDetectAndBlurEnabled,
+                        onCheckedChange = onToggleAutoDetectAndBlur,
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
+                            checkedTrackColor = primary,
+                            uncheckedThumbColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            uncheckedTrackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                            uncheckedBorderColor = MaterialTheme.colorScheme.outline
                         ),
-                        contentPadding = PaddingValues(horizontal = 20.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.Add,
-                            contentDescription = null,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "New Project",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
+                        modifier = Modifier.testTag("home_auto_detect_blur_switch")
+                    )
                 }
             }
 
-            // Quick Mode Launch Tiles (Side-by-side Pro Cards)
+            // Simple 2-Column Quick Import Row
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                QuickLaunchTile(
-                    title = "Video Editor",
-                    subtitle = "Track, Trim & Cut MP4",
+                MinimalActionTile(
+                    title = "Video",
+                    subtitle = if (autoDetectAndBlurEnabled) "Auto-blur, trim & cut" else "Track, trim & cut",
                     icon = Icons.Filled.Videocam,
                     onClick = onPickVideoOnly,
                     modifier = Modifier
                         .weight(1f)
                         .testTag("pick_video_button")
                 )
-                QuickLaunchTile(
-                    title = "Photo Privacy",
-                    subtitle = "Instant Face Masking",
+                MinimalActionTile(
+                    title = "Photo",
+                    subtitle = if (autoDetectAndBlurEnabled) "Auto-blur on import" else "Instant face mask",
                     icon = Icons.Filled.Image,
                     onClick = onPickImageOnly,
                     modifier = Modifier
@@ -308,65 +312,87 @@ fun LaunchStudioScreen(
                 )
             }
 
-            // Compact Studio Engine Pipeline Strip
+            // Dedicated Batch Gallery Processing Card
             Surface(
-                modifier = Modifier.fillMaxWidth(),
+                onClick = onStartBatchPick,
                 shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerLow,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("home_batch_process_button")
             ) {
-                Column(
-                    modifier = Modifier.padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = "ENGINE PIPELINE",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        modifier = Modifier.size(44.dp)
                     ) {
-                        SpecBadge(
-                            icon = Icons.Filled.FaceRetouchingOff,
-                            title = "5 Mask Modes",
-                            detail = "Blur, Mosaic, Emoji",
-                            modifier = Modifier.weight(1f)
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Filled.Collections,
+                                contentDescription = null,
+                                tint = primary,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                    }
+
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        Text(
+                            text = stringResource(R.string.action_batch_process),
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurface
                         )
-                        SpecBadge(
-                            icon = Icons.Filled.AutoFixHigh,
-                            title = "GPU Shaders",
-                            detail = "OpenGL ES 2.0",
-                            modifier = Modifier.weight(1f)
-                        )
-                        SpecBadge(
-                            icon = Icons.Filled.ContentCut,
-                            title = "Multi-Cut",
-                            detail = "Media3 Export",
-                            modifier = Modifier.weight(1f)
+                        Text(
+                            text = "Auto-mask multiple photos & videos at once",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp)
+                    )
                 }
             }
 
-            Spacer(modifier = Modifier.height(6.dp))
+            // Minimal Privacy Footnote
+            Text(
+                text = "On-device ML Kit face tracking • Hardware Media3 export • Zero cloud uploads",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
+                modifier = Modifier.padding(horizontal = 4.dp)
+            )
+
+            Spacer(modifier = Modifier.height(4.dp))
         }
     }
 }
 
 @Composable
-private fun QuickLaunchTile(
+private fun MinimalActionTile(
     title: String,
     subtitle: String,
     icon: ImageVector,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val primary = MaterialTheme.colorScheme.primary
     Surface(
         onClick = onClick,
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surfaceContainer,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
         modifier = modifier
@@ -375,20 +401,12 @@ private fun QuickLaunchTile(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
-                modifier = Modifier.size(42.dp)
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        imageVector = icon,
-                        contentDescription = null,
-                        tint = primary,
-                        modifier = Modifier.size(22.dp)
-                    )
-                }
-            }
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(22.dp)
+            )
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(
                     text = title,
@@ -401,42 +419,6 @@ private fun QuickLaunchTile(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-        }
-    }
-}
-
-@Composable
-private fun SpecBadge(
-    icon: ImageVector,
-    title: String,
-    detail: String,
-    modifier: Modifier = Modifier
-) {
-    Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        modifier = modifier
-    ) {
-        Column(
-            modifier = Modifier.padding(10.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(18.dp)
-            )
-            Text(
-                text = title,
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            Text(
-                text = detail,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
         }
     }
 }

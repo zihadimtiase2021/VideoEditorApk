@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -59,6 +58,7 @@ fun WatermarkPanel(
     onLogoScaleChange: (Float) -> Unit,
     onOpacityChange: (Float) -> Unit,
     onSelectPreset: (WatermarkPositionPreset) -> Unit,
+    onSliderFinished: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val wm = uiState.watermarkConfig
@@ -68,10 +68,9 @@ fun WatermarkPanel(
         modifier = modifier
             .fillMaxWidth()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // 1. Watermark Mode Selector (Off / Text / Logo)
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -109,13 +108,13 @@ fun WatermarkPanel(
 
         if (wm.type == WatermarkType.NONE) {
             Surface(
-                shape = RoundedCornerShape(14.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surfaceContainer,
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text(
-                    text = "Select Text or Logo to brand your footage, then snap to a corner anchor or drag directly on the monitor.",
+                    text = "Choose Text or Logo above, then tap an anchor dot or drag directly on the preview.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(14.dp)
@@ -124,7 +123,6 @@ fun WatermarkPanel(
             return
         }
 
-        // 2. Text or Logo Specific Controls
         when (wm.type) {
             WatermarkType.TEXT -> {
                 OutlinedTextField(
@@ -136,8 +134,8 @@ fun WatermarkPanel(
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedBorderColor = primary,
                         unfocusedBorderColor = MaterialTheme.colorScheme.outline,
-                        focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+                        focusedContainerColor = MaterialTheme.colorScheme.surfaceContainer,
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainer
                     ),
                     modifier = Modifier
                         .fillMaxWidth()
@@ -145,17 +143,18 @@ fun WatermarkPanel(
                 )
 
                 StudioSliderRow(
-                    label = "Font Size",
+                    label = "Size",
                     valueText = "${wm.fontSizeSp.roundToInt()} sp",
                     value = wm.fontSizeSp,
                     valueRange = 12f..64f,
                     onValueChange = onFontSizeChange,
+                    onValueChangeFinished = onSliderFinished,
                     testTag = "watermark_font_size_slider"
                 )
 
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
-                        text = "Text Color",
+                        text = "Color",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -180,7 +179,7 @@ fun WatermarkPanel(
                         .height(48.dp)
                         .testTag("pick_watermark_logo_button"),
                     shape = RoundedCornerShape(12.dp),
-                    border = BorderStroke(1.dp, primary.copy(alpha = 0.65f))
+                    border = BorderStroke(1.dp, primary.copy(alpha = 0.6f))
                 ) {
                     Icon(
                         imageVector = Icons.Filled.Image,
@@ -190,7 +189,7 @@ fun WatermarkPanel(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = if (wm.logoUri != null) "Change Transparent PNG Logo" else "Pick Transparent PNG Logo",
+                        text = if (wm.logoUri != null) "Change PNG Logo" else "Choose Transparent PNG",
                         style = MaterialTheme.typography.labelLarge
                     )
                 }
@@ -201,6 +200,7 @@ fun WatermarkPanel(
                     value = wm.logoScale,
                     valueRange = 0.08f..0.48f,
                     onValueChange = onLogoScaleChange,
+                    onValueChangeFinished = onSliderFinished,
                     testTag = "watermark_logo_scale_slider"
                 )
             }
@@ -208,20 +208,19 @@ fun WatermarkPanel(
             WatermarkType.NONE -> Unit
         }
 
-        // 3. Opacity Slider
         StudioSliderRow(
             label = "Opacity",
             valueText = "${(wm.opacity * 100).roundToInt()}%",
             value = wm.opacity,
             valueRange = 0.1f..1.0f,
             onValueChange = onOpacityChange,
+            onValueChangeFinished = onSliderFinished,
             testTag = "watermark_opacity_slider"
         )
 
-        // 4. Visual Anchor Pad + Snap Presets
         Surface(
-            shape = RoundedCornerShape(14.dp),
-            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surfaceContainer,
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
         ) {
             Row(
@@ -231,14 +230,13 @@ fun WatermarkPanel(
                 horizontalArrangement = Arrangement.spacedBy(14.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Interactive 5-Point Visual Frame Anchor Pad
                 Box(
                     modifier = Modifier
                         .width(104.dp)
-                        .height(68.dp)
+                        .height(66.dp)
                         .clip(RoundedCornerShape(10.dp))
                         .background(MaterialTheme.colorScheme.surfaceContainerLowest)
-                        .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(10.dp))
+                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(10.dp))
                         .padding(6.dp)
                 ) {
                     AnchorDot(
@@ -283,7 +281,7 @@ fun WatermarkPanel(
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Text(
-                        text = "Anchor: ${wm.preset.label}",
+                        text = "Position: ${wm.preset.label}",
                         style = MaterialTheme.typography.titleSmall,
                         color = MaterialTheme.colorScheme.onSurface
                     )
@@ -298,7 +296,7 @@ fun WatermarkPanel(
                             modifier = Modifier.size(14.dp)
                         )
                         Text(
-                            text = "Tap an anchor dot or drag directly on preview with center snap guides.",
+                            text = "Tap an anchor or drag freely on preview.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

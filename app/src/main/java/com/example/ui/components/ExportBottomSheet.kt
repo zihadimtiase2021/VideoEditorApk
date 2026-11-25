@@ -17,6 +17,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Collections
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.FolderOpen
@@ -61,6 +62,7 @@ fun ExportBottomSheet(
     onSelectVideoQuality: (VideoExportQuality) -> Unit,
     onSelectImageFormat: (ImageExportFormat) -> Unit,
     onStartExport: () -> Unit,
+    onApplyToBatch: () -> Unit,
     onCancelExport: () -> Unit,
     onDismiss: () -> Unit,
     onShareExport: (Uri, String) -> Unit,
@@ -77,14 +79,14 @@ fun ExportBottomSheet(
         sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surface,
         contentColor = MaterialTheme.colorScheme.onSurface,
-        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
+        shape = RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp)
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .navigationBarsPadding()
-                .padding(horizontal = 20.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+                .padding(horizontal = 20.dp, vertical = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             when (val export = uiState.exportState) {
                 is ExportState.Configuring -> {
@@ -125,23 +127,23 @@ fun ExportBottomSheet(
                         }
                     }
 
-                    // Destination Card
                     Surface(
-                        shape = RoundedCornerShape(14.dp),
+                        shape = RoundedCornerShape(12.dp),
                         color = MaterialTheme.colorScheme.surfaceContainerHigh,
                         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
                     ) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(14.dp),
+                                .padding(12.dp),
                             horizontalArrangement = Arrangement.spacedBy(12.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Icon(
                                 imageVector = Icons.Filled.FolderOpen,
                                 contentDescription = null,
-                                tint = primary
+                                tint = primary,
+                                modifier = Modifier.size(20.dp)
                             )
                             Column {
                                 Text(
@@ -172,13 +174,36 @@ fun ExportBottomSheet(
                         Icon(
                             imageVector = Icons.Filled.Download,
                             contentDescription = null,
-                            modifier = Modifier.size(20.dp)
+                            modifier = Modifier.size(19.dp)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
                             text = stringResource(R.string.export_start_button),
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    // Apply active settings to multiple gallery items
+                    OutlinedButton(
+                        onClick = onApplyToBatch,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .testTag("apply_to_batch_button"),
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Collections,
+                            contentDescription = null,
+                            tint = primary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = stringResource(R.string.action_apply_to_batch),
+                            style = MaterialTheme.typography.labelLarge
                         )
                     }
                 }
@@ -209,7 +234,7 @@ fun ExportBottomSheet(
                             progress = { export.progress.coerceIn(0f, 1f) },
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(8.dp)
+                                .height(7.dp)
                                 .clip(CircleShape),
                             color = primary,
                             trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
@@ -237,7 +262,7 @@ fun ExportBottomSheet(
                             imageVector = Icons.Filled.CheckCircle,
                             contentDescription = null,
                             tint = StudioSuccess,
-                            modifier = Modifier.size(34.dp)
+                            modifier = Modifier.size(32.dp)
                         )
                         Column {
                             Text(
@@ -260,7 +285,7 @@ fun ExportBottomSheet(
                             onClick = { onShareExport(export.outputUri, export.mimeType) },
                             modifier = Modifier
                                 .weight(1f)
-                                .height(50.dp)
+                                .height(48.dp)
                                 .testTag("share_export_button"),
                             shape = RoundedCornerShape(12.dp),
                             colors = ButtonDefaults.buttonColors(
@@ -281,7 +306,7 @@ fun ExportBottomSheet(
                             onClick = { onOpenExport(export.outputUri, export.mimeType) },
                             modifier = Modifier
                                 .weight(1f)
-                                .height(50.dp)
+                                .height(48.dp)
                                 .testTag("open_export_button"),
                             shape = RoundedCornerShape(12.dp),
                             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
@@ -316,7 +341,7 @@ fun ExportBottomSheet(
                             imageVector = Icons.Filled.ErrorOutline,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.size(32.dp)
+                            modifier = Modifier.size(30.dp)
                         )
                         Column {
                             Text(
@@ -378,8 +403,8 @@ private fun ExportOptionRow(
     val primary = MaterialTheme.colorScheme.primary
     Surface(
         onClick = onClick,
-        shape = RoundedCornerShape(14.dp),
-        color = if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f) else MaterialTheme.colorScheme.surfaceContainerHigh,
+        shape = RoundedCornerShape(12.dp),
+        color = if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f) else MaterialTheme.colorScheme.surfaceContainerHigh,
         border = BorderStroke(
             width = if (selected) 1.5.dp else 1.dp,
             color = if (selected) primary else MaterialTheme.colorScheme.outlineVariant

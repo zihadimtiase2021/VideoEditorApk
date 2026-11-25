@@ -1,12 +1,16 @@
 package com.example.viewmodel
 
 import android.app.Application
+import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.engine.FaceDetectionEngine
 import com.example.engine.MediaExportEngine
 import com.example.engine.MediaMetadataLoader
+import com.example.model.BatchExportState
+import com.example.model.BatchItemStatus
+import com.example.model.BatchQueueItem
 import com.example.model.CutSegment
 import com.example.model.EditSnapshot
 import com.example.model.EditorTab
@@ -27,6 +31,7 @@ import com.example.model.WatermarkPositionPreset
 import com.example.model.WatermarkType
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -35,20 +40,27 @@ import kotlinx.coroutines.launch
 
 class EditorViewModel(application: Application) : AndroidViewModel(application) {
 
+    private val prefs = application.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     private val metadataLoader = MediaMetadataLoader(application)
     private val faceDetectionEngine = FaceDetectionEngine(application, metadataLoader)
     private val exportEngine = MediaExportEngine(application, metadataLoader)
 
-    private val _uiState = MutableStateFlow(EditorUiState())
+    private val _uiState = MutableStateFlow(
+        EditorUiState(
+            autoDetectAndBlurOnImport = prefs.getBoolean(KEY_AUTO_DETECT_BLUR_ON_IMPORT, true)
+        )
+    )
     val uiState: StateFlow<EditorUiState> = _uiState.asStateFlow()
 
     private val undoStack = ArrayDeque<EditSnapshot>()
     private val redoStack = ArrayDeque<EditSnapshot>()
-    private val maxHistorySize = 30
+    private val maxHistorySize = 40
+    private var continuousEditActive = false
 
     private var faceScanJob: Job? = null
     private var filmstripJob: Job? = null
     private var exportJob: Job? = null
+    private var batchExportJob: Job? = null
 
     private fun captureSnapshot(state: EditorUiState): EditSnapshot = EditSnapshot(
         faceTracks = state.faceTracks,
@@ -61,7 +73,9 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     private fun pushUndoSnapshot() {
         val current = _uiState.value
         if (current.mediaAsset == null) return
-        undoStack.addLast(captureSnapshot(current))
+        val snapshot = captureSnapshot(current)
+        if (undoStack.lastOrNull() == snapshot) return
+        undoStack.addLast(snapshot)
         while (undoStack.size > maxHistorySize) {
             undoStack.removeFirst()
         }
@@ -71,25 +85,46 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     private fun clearHistory() {
         undoStack.clear()
         redoStack.clear()
+        continuousEditActive = false
     }
+
+    private fun EditorUiState.withHistoryFlags(): EditorUiState = copy(
+        canUndo = undoStack.isNotEmpty(),
+        canRedo = redoStack.isNotEmpty(),
+        undoCount = undoStack.size,
+        redoCount = redoStack.size
+    )
 
     private fun updateWithHistory(
         recordUndo: Boolean = true,
         transform: (EditorUiState) -> EditorUiState
     ) {
         if (recordUndo) {
+            continuousEditActive = false
             pushUndoSnapshot()
         }
-        _uiState.update { state ->
-            transform(state).copy(
-                canUndo = undoStack.isNotEmpty(),
-                canRedo = redoStack.isNotEmpty()
-            )
+        _uiState.update { state -> transform(state).withHistoryFlags() }
+    }
+
+    /**
+     * Begins a coalesced continuous gesture/slider edit so dragging a slider or overlay
+     * records exactly ONE clean Undo step rather than flooding history.
+     */
+    fun beginContinuousEdit() {
+        if (!continuousEditActive && _uiState.value.mediaAsset != null) {
+            continuousEditActive = true
+            pushUndoSnapshot()
+            _uiState.update { it.withHistoryFlags() }
         }
+    }
+
+    fun endContinuousEdit() {
+        continuousEditActive = false
     }
 
     fun undo() {
         if (undoStack.isEmpty()) return
+        continuousEditActive = false
         val current = _uiState.value
         redoStack.addLast(captureSnapshot(current))
         val previous = undoStack.removeLast()
@@ -100,15 +135,14 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 maskConfig = previous.maskConfig,
                 watermarkConfig = previous.watermarkConfig,
                 trimCutConfig = previous.trimCutConfig,
-                selectedManualBoxId = null,
-                canUndo = undoStack.isNotEmpty(),
-                canRedo = redoStack.isNotEmpty()
-            )
+                selectedManualBoxId = null
+            ).withHistoryFlags()
         }
     }
 
     fun redo() {
         if (redoStack.isEmpty()) return
+        continuousEditActive = false
         val current = _uiState.value
         undoStack.addLast(captureSnapshot(current))
         val next = redoStack.removeLast()
@@ -119,10 +153,8 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 maskConfig = next.maskConfig,
                 watermarkConfig = next.watermarkConfig,
                 trimCutConfig = next.trimCutConfig,
-                selectedManualBoxId = null,
-                canUndo = undoStack.isNotEmpty(),
-                canRedo = redoStack.isNotEmpty()
-            )
+                selectedManualBoxId = null
+            ).withHistoryFlags()
         }
     }
 
@@ -135,12 +167,26 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             try {
                 val asset = metadataLoader.loadAsset(uri)
+                val shouldAutoDetectAndBlur = _uiState.value.autoDetectAndBlurOnImport
                 _uiState.update { current ->
                     current.filmstripThumbnails.forEach { if (!it.isRecycled) it.recycle() }
+                    val initialMaskConfig = if (shouldAutoDetectAndBlur) {
+                        current.maskConfig.copy(
+                            mode = MaskMode.GAUSSIAN_BLUR,
+                            applyToAllFaces = true
+                        )
+                    } else {
+                        current.maskConfig
+                    }
                     EditorUiState(
                         mediaAsset = asset,
                         activeTab = EditorTab.FACE_MASK,
+                        autoDetectAndBlurOnImport = current.autoDetectAndBlurOnImport,
                         scanAccuracy = current.scanAccuracy,
+                        maskConfig = initialMaskConfig,
+                        stickerBitmap = current.stickerBitmap,
+                        watermarkConfig = current.watermarkConfig,
+                        watermarkLogoBitmap = current.watermarkLogoBitmap,
                         trimCutConfig = TrimCutConfig(
                             totalDurationMs = asset.durationMs,
                             trimStartMs = 0L,
@@ -152,10 +198,12 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     )
                 }
 
-                if (asset.type == MediaType.IMAGE) {
-                    scanFaces()
-                } else {
+                if (asset.type == MediaType.VIDEO) {
                     loadVideoFilmstrip(uri, asset.durationMs)
+                }
+
+                if (shouldAutoDetectAndBlur) {
+                    scanFaces(isAutoImport = true, forceBlurAll = true)
                 }
             } catch (e: Exception) {
                 _uiState.update {
@@ -188,7 +236,12 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.update { state ->
             state.filmstripThumbnails.forEach { if (!it.isRecycled) it.recycle() }
             EditorUiState(
+                autoDetectAndBlurOnImport = state.autoDetectAndBlurOnImport,
                 scanAccuracy = state.scanAccuracy,
+                maskConfig = state.maskConfig,
+                stickerBitmap = state.stickerBitmap,
+                watermarkConfig = state.watermarkConfig,
+                watermarkLogoBitmap = state.watermarkLogoBitmap,
                 videoExportQuality = state.videoExportQuality,
                 imageExportFormat = state.imageExportFormat
             )
@@ -209,7 +262,8 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     trimEndMs = asset.durationMs
                 ),
                 faceTracks = state.faceTracks.map { it.copy(isSelected = true) },
-                snackbarMessage = "All edits reset"
+                isComparingOriginal = false,
+                snackbarMessage = "Edits reset"
             )
         }
     }
@@ -222,20 +276,54 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.update { it.copy(isComparingOriginal = comparing) }
     }
 
+    fun toggleComparingOriginal() {
+        _uiState.update { it.copy(isComparingOriginal = !it.isComparingOriginal) }
+    }
+
     fun toggleMute() {
         _uiState.update { it.copy(isMuted = !it.isMuted) }
+    }
+
+    fun setAutoDetectAndBlurOnImport(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_AUTO_DETECT_BLUR_ON_IMPORT, enabled).apply()
+        _uiState.update { it.copy(autoDetectAndBlurOnImport = enabled) }
     }
 
     fun setScanAccuracy(accuracy: ScanAccuracy) {
         _uiState.update { it.copy(scanAccuracy = accuracy) }
     }
 
-    fun scanFaces() {
+    /**
+     * One-tap Auto-Detect & Blur: records an Undo snapshot, selects Gaussian Blur across all faces,
+     * and runs ML Kit face detection on the active image or video.
+     */
+    fun autoDetectAndBlur() {
+        if (_uiState.value.mediaAsset == null) return
+        updateWithHistory { state ->
+            state.copy(
+                isComparingOriginal = false,
+                maskConfig = state.maskConfig.copy(
+                    mode = MaskMode.GAUSSIAN_BLUR,
+                    applyToAllFaces = true
+                )
+            )
+        }
+        scanFaces(isAutoImport = false, forceBlurAll = true)
+    }
+
+    fun scanFaces(isAutoImport: Boolean = false, forceBlurAll: Boolean = false) {
         val asset = _uiState.value.mediaAsset ?: return
         faceScanJob?.cancel()
         faceScanJob = viewModelScope.launch {
             _uiState.update {
-                it.copy(faceScanState = FaceScanState.Scanning(progress = 0f, framesScanned = 0, totalFrames = 1))
+                it.copy(
+                    faceScanState = FaceScanState.Scanning(
+                        progress = 0f,
+                        framesScanned = 0,
+                        totalFrames = 1,
+                        isAutoImportScan = isAutoImport
+                    )
+                )
             }
             try {
                 val tracks = if (asset.type == MediaType.IMAGE) {
@@ -244,28 +332,49 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                     faceDetectionEngine.scanVideoFaces(
                         uri = asset.uri,
                         durationMs = asset.durationMs,
-                        accuracy = _uiState.value.scanAccuracy
+                        accuracy = _uiState.value.scanAccuracy,
+                        onPartialTracks = { partialTracks ->
+                            _uiState.update { state ->
+                                if (state.mediaAsset?.uri == asset.uri) {
+                                    state.copy(faceTracks = partialTracks)
+                                } else {
+                                    state
+                                }
+                            }
+                        }
                     ) { progress, scanned, total ->
                         _uiState.update {
                             it.copy(
                                 faceScanState = FaceScanState.Scanning(
                                     progress = progress,
                                     framesScanned = scanned,
-                                    totalFrames = total
+                                    totalFrames = total,
+                                    isAutoImportScan = isAutoImport
                                 )
                             )
                         }
                     }
                 }
-                _uiState.update {
-                    it.copy(
+                _uiState.update { state ->
+                    val updatedMaskConfig = if (forceBlurAll) {
+                        state.maskConfig.copy(
+                            mode = MaskMode.GAUSSIAN_BLUR,
+                            applyToAllFaces = true
+                        )
+                    } else {
+                        state.maskConfig
+                    }
+                    val faceNoun = if (tracks.size == 1) "face" else "faces"
+                    val summaryMessage = when {
+                        tracks.isEmpty() -> "No faces found. Tap Add Box to mask manually."
+                        isAutoImport || forceBlurAll -> "Auto-blurred ${tracks.size} $faceNoun"
+                        else -> "Detected ${tracks.size} $faceNoun"
+                    }
+                    state.copy(
                         faceTracks = tracks,
+                        maskConfig = updatedMaskConfig,
                         faceScanState = FaceScanState.Completed(tracks.size),
-                        snackbarMessage = if (tracks.isEmpty()) {
-                            "No faces detected. Tap Add Box to mask manually."
-                        } else {
-                            "Locked onto ${tracks.size} ${if (tracks.size == 1) "face" else "faces"}"
-                        }
+                        snackbarMessage = summaryMessage
                     )
                 }
             } catch (e: CancellationException) {
@@ -307,12 +416,14 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun setBlurIntensity(intensity: Float) {
+        beginContinuousEdit()
         _uiState.update {
             it.copy(maskConfig = it.maskConfig.copy(blurIntensity = intensity.coerceIn(0.15f, 1.0f)))
         }
     }
 
     fun setPixelBlockSize(size: Float) {
+        beginContinuousEdit()
         _uiState.update {
             it.copy(maskConfig = it.maskConfig.copy(pixelBlockSize = size.coerceIn(0.1f, 1.0f)))
         }
@@ -349,6 +460,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun setStickerScale(scale: Float) {
+        beginContinuousEdit()
         _uiState.update {
             it.copy(maskConfig = it.maskConfig.copy(stickerScale = scale.coerceIn(0.7f, 2.0f)))
         }
@@ -377,14 +489,8 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.update { it.copy(selectedManualBoxId = boxId) }
     }
 
-    fun beginGestureEdit() {
-        pushUndoSnapshot()
-        _uiState.update {
-            it.copy(canUndo = undoStack.isNotEmpty(), canRedo = redoStack.isNotEmpty())
-        }
-    }
-
     fun moveManualBox(boxId: String, dxNorm: Float, dyNorm: Float) {
+        beginContinuousEdit()
         _uiState.update { state ->
             state.copy(
                 selectedManualBoxId = boxId,
@@ -396,6 +502,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun resizeManualBox(boxId: String, dwNorm: Float, dhNorm: Float) {
+        beginContinuousEdit()
         _uiState.update { state ->
             state.copy(
                 selectedManualBoxId = boxId,
@@ -421,10 +528,12 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun setWatermarkText(text: String) {
+        beginContinuousEdit()
         _uiState.update { it.copy(watermarkConfig = it.watermarkConfig.copy(text = text.take(48))) }
     }
 
     fun setWatermarkFontSize(sizeSp: Float) {
+        beginContinuousEdit()
         _uiState.update {
             it.copy(watermarkConfig = it.watermarkConfig.copy(fontSizeSp = sizeSp.coerceIn(12f, 64f)))
         }
@@ -455,12 +564,14 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun setWatermarkLogoScale(scale: Float) {
+        beginContinuousEdit()
         _uiState.update {
             it.copy(watermarkConfig = it.watermarkConfig.copy(logoScale = scale.coerceIn(0.08f, 0.48f)))
         }
     }
 
     fun setWatermarkOpacity(opacity: Float) {
+        beginContinuousEdit()
         _uiState.update {
             it.copy(watermarkConfig = it.watermarkConfig.copy(opacity = opacity.coerceIn(0.1f, 1.0f)))
         }
@@ -479,6 +590,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun moveWatermark(dxNorm: Float, dyNorm: Float) {
+        beginContinuousEdit()
         _uiState.update { state ->
             val wm = state.watermarkConfig
             state.copy(
@@ -499,6 +611,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun updateTrimRange(startMs: Long, endMs: Long) {
+        beginContinuousEdit()
         _uiState.update { state ->
             val total = state.trimCutConfig.totalDurationMs
             val minLen = minOf(500L, total)
@@ -578,6 +691,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun updateCutSegment(id: String, startMs: Long, endMs: Long) {
+        beginContinuousEdit()
         _uiState.update { state ->
             val trim = state.trimCutConfig
             val minStart = trim.trimStartMs + 100L
@@ -604,7 +718,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    // Export Sheet & Processing
+    // Single-File Export Sheet & Processing
     fun openExportSheet() {
         _uiState.update { it.copy(exportState = ExportState.Configuring) }
     }
@@ -623,7 +737,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         exportJob?.cancel()
         exportJob = viewModelScope.launch {
             _uiState.update {
-                it.copy(exportState = ExportState.Processing(0f, "Starting export..."))
+                it.copy(exportState = ExportState.Processing(0f, "Preparing export..."))
             }
             try {
                 val result = exportEngine.export(snapshot) { progress, stage ->
@@ -660,6 +774,209 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    // Batch Gallery Processing Pipeline
+    fun openBatchSelection(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        batchExportJob?.cancel()
+        viewModelScope.launch {
+            val resolvedItems = uris.mapNotNull { uri ->
+                runCatching {
+                    val asset = metadataLoader.loadAsset(uri)
+                    BatchQueueItem(
+                        uri = uri,
+                        displayName = asset.displayName,
+                        mediaType = asset.type
+                    )
+                }.getOrNull()
+            }
+            if (resolvedItems.isEmpty()) {
+                _uiState.update { it.copy(snackbarMessage = "Could not load selected gallery files") }
+                return@launch
+            }
+            _uiState.update { state ->
+                val hasActiveWatermark = state.watermarkConfig.type != WatermarkType.NONE
+                state.copy(
+                    exportState = ExportState.Idle,
+                    batchExportState = BatchExportState.Configuring(
+                        items = resolvedItems,
+                        includeWatermark = hasActiveWatermark
+                    )
+                )
+            }
+        }
+    }
+
+    fun removeBatchItem(itemId: String) {
+        _uiState.update { state ->
+            val current = state.batchExportState as? BatchExportState.Configuring ?: return@update state
+            val updated = current.items.filterNot { it.id == itemId }
+            if (updated.isEmpty()) {
+                state.copy(batchExportState = BatchExportState.Idle)
+            } else {
+                state.copy(batchExportState = current.copy(items = updated))
+            }
+        }
+    }
+
+    fun setBatchIncludeWatermark(include: Boolean) {
+        _uiState.update { state ->
+            val current = state.batchExportState as? BatchExportState.Configuring ?: return@update state
+            state.copy(batchExportState = current.copy(includeWatermark = include))
+        }
+    }
+
+    fun startBatchExport() {
+        val currentState = _uiState.value
+        val configState = currentState.batchExportState as? BatchExportState.Configuring ?: return
+        if (configState.items.isEmpty()) return
+
+        batchExportJob?.cancel()
+        batchExportJob = viewModelScope.launch {
+            val items = configState.items.toMutableList()
+            val totalCount = items.size
+            val savedUris = mutableListOf<Uri>()
+            val sharedMask = currentState.maskConfig.copy(applyToAllFaces = true)
+            val sharedWatermark = if (configState.includeWatermark) {
+                currentState.watermarkConfig
+            } else {
+                WatermarkConfig(type = WatermarkType.NONE)
+            }
+
+            try {
+                for (index in items.indices) {
+                    ensureActive()
+                    val queueItem = items[index]
+
+                    // 1. Detect Faces with ML Kit
+                    items[index] = queueItem.copy(status = BatchItemStatus.DETECTING_FACES)
+                    emitBatchProcessing(items, index, 0.05f, totalCount, "Scanning faces (${index + 1}/$totalCount)…")
+
+                    try {
+                        val asset = metadataLoader.loadAsset(queueItem.uri)
+                        val tracks = if (asset.type == MediaType.IMAGE) {
+                            faceDetectionEngine.detectFacesInImage(asset.uri)
+                        } else {
+                            faceDetectionEngine.scanVideoFaces(
+                                uri = asset.uri,
+                                durationMs = asset.durationMs,
+                                accuracy = currentState.scanAccuracy
+                            ) { scanProgress, _, _ ->
+                                emitBatchProcessing(
+                                    items = items,
+                                    currentIndex = index,
+                                    itemProgress = scanProgress * 0.45f,
+                                    totalCount = totalCount,
+                                    stage = "Scanning faces (${index + 1}/$totalCount)…"
+                                )
+                            }
+                        }
+
+                        // 2. Render & Save via MediaExportEngine
+                        items[index] = items[index].copy(
+                            status = BatchItemStatus.RENDERING,
+                            detectedFaces = tracks.size
+                        )
+                        val itemEditorState = EditorUiState(
+                            mediaAsset = asset,
+                            faceTracks = tracks,
+                            maskConfig = sharedMask,
+                            stickerBitmap = currentState.stickerBitmap,
+                            watermarkConfig = sharedWatermark,
+                            watermarkLogoBitmap = currentState.watermarkLogoBitmap,
+                            trimCutConfig = TrimCutConfig(
+                                totalDurationMs = asset.durationMs,
+                                trimStartMs = 0L,
+                                trimEndMs = asset.durationMs
+                            ),
+                            videoExportQuality = currentState.videoExportQuality,
+                            imageExportFormat = currentState.imageExportFormat
+                        )
+
+                        val result = exportEngine.export(itemEditorState) { renderProgress, _ ->
+                            emitBatchProcessing(
+                                items = items,
+                                currentIndex = index,
+                                itemProgress = 0.45f + renderProgress * 0.55f,
+                                totalCount = totalCount,
+                                stage = "Rendering ${asset.displayName} (${index + 1}/$totalCount)…"
+                            )
+                        }
+
+                        items[index] = items[index].copy(
+                            status = BatchItemStatus.SAVED,
+                            outputUri = result.outputUri,
+                            outputMimeType = result.mimeType
+                        )
+                        savedUris.add(result.outputUri)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        items[index] = items[index].copy(
+                            status = BatchItemStatus.FAILED,
+                            errorMessage = e.localizedMessage ?: "Export error"
+                        )
+                    }
+                }
+
+                _uiState.update {
+                    it.copy(
+                        batchExportState = BatchExportState.Completed(
+                            items = items.toList(),
+                            savedUris = savedUris.toList()
+                        ),
+                        snackbarMessage = "Batch complete: ${savedUris.size} of $totalCount saved to gallery"
+                    )
+                }
+            } catch (e: CancellationException) {
+                _uiState.update { it.copy(batchExportState = BatchExportState.Idle) }
+                throw e
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        batchExportState = BatchExportState.Error(
+                            e.localizedMessage ?: "Batch export interrupted"
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    private fun emitBatchProcessing(
+        items: List<BatchQueueItem>,
+        currentIndex: Int,
+        itemProgress: Float,
+        totalCount: Int,
+        stage: String
+    ) {
+        val clampedItem = itemProgress.coerceIn(0f, 1f)
+        val overall = ((currentIndex + clampedItem) / totalCount.coerceAtLeast(1)).coerceIn(0f, 1f)
+        _uiState.update {
+            it.copy(
+                batchExportState = BatchExportState.Processing(
+                    items = items.toList(),
+                    currentIndex = currentIndex,
+                    itemProgress = clampedItem,
+                    overallProgress = overall,
+                    stage = stage
+                )
+            )
+        }
+    }
+
+    fun cancelBatchExport() {
+        batchExportJob?.cancel()
+        _uiState.update { it.copy(batchExportState = BatchExportState.Idle) }
+    }
+
+    fun dismissBatchSheet() {
+        if (_uiState.value.batchExportState is BatchExportState.Processing) {
+            cancelBatchExport()
+        } else {
+            _uiState.update { it.copy(batchExportState = BatchExportState.Idle) }
+        }
+    }
+
     fun consumeSnackbar() {
         _uiState.update { it.copy(snackbarMessage = null) }
     }
@@ -669,5 +986,10 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.value.filmstripThumbnails.forEach { if (!it.isRecycled) it.recycle() }
         _uiState.value.stickerBitmap?.let { if (!it.isRecycled) it.recycle() }
         _uiState.value.watermarkLogoBitmap?.let { if (!it.isRecycled) it.recycle() }
+    }
+
+    companion object {
+        private const val PREFS_NAME = "maskframe_prefs"
+        private const val KEY_AUTO_DETECT_BLUR_ON_IMPORT = "auto_detect_blur_on_import"
     }
 }

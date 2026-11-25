@@ -72,6 +72,7 @@ class FaceDetectionEngine(
         uri: Uri,
         durationMs: Long,
         accuracy: ScanAccuracy,
+        onPartialTracks: (List<FaceTrack>) -> Unit = {},
         onProgress: (progress: Float, scanned: Int, total: Int) -> Unit
     ): List<FaceTrack> = withContext(Dispatchers.Default) {
         if (durationMs <= 0L) return@withContext emptyList()
@@ -105,6 +106,7 @@ class FaceDetectionEngine(
         // Track ID -> mutable keyframes list
         val trackMap = linkedMapOf<Int, MutableList<FaceKeyframe>>()
         var nextSyntheticId = 1000
+        var lastPublishedTrackCount = 0
 
         try {
             retriever.setDataSource(context, uri)
@@ -145,6 +147,17 @@ class FaceDetectionEngine(
                     }
                 }
 
+                // Publish progressive tracks on opening frame, when a new face appears, or every 4 frames
+                val shouldPublish = trackMap.isNotEmpty() && (
+                    index == 0 ||
+                        trackMap.size != lastPublishedTrackCount ||
+                        (index + 1) % 4 == 0
+                    )
+                if (shouldPublish) {
+                    lastPublishedTrackCount = trackMap.size
+                    onPartialTracks(buildTracksSnapshot(trackMap))
+                }
+
                 onProgress(
                     (index + 1).toFloat() / total.toFloat(),
                     index + 1,
@@ -156,14 +169,19 @@ class FaceDetectionEngine(
             runCatching { retriever.release() }
         }
 
-        // Convert to clean sequential Face 1, Face 2... sorted by appearance frequency
-        trackMap.entries
+        buildTracksSnapshot(trackMap)
+    }
+
+    private fun buildTracksSnapshot(
+        trackMap: Map<Int, MutableList<FaceKeyframe>>
+    ): List<FaceTrack> {
+        return trackMap.entries
             .sortedByDescending { it.value.size }
             .mapIndexed { idx, (_, frames) ->
                 FaceTrack(
                     id = idx + 1,
                     label = "Face ${idx + 1}",
-                    keyframes = frames.sortedBy { it.timestampMs },
+                    keyframes = frames.toList().sortedBy { it.timestampMs },
                     isSelected = true,
                     isStaticImage = false
                 )

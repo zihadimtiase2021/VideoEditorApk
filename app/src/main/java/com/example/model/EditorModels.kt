@@ -27,9 +27,9 @@ enum class MaskMode(val label: String) {
 }
 
 enum class ScanAccuracy(val label: String, val fps: Int, val description: String) {
-    FAST("Fast", 2, "2 fps • Quick scan"),
-    BALANCED("Balanced", 5, "5 fps • Smooth tracking"),
-    HIGH("High", 10, "10 fps • Fast motion")
+    FAST("Fast", 2, "2 fps • Quick"),
+    BALANCED("Balanced", 5, "5 fps • Smooth"),
+    HIGH("High", 10, "10 fps • Precise")
 }
 
 enum class WatermarkType(val label: String) {
@@ -52,9 +52,9 @@ enum class WatermarkPositionPreset(
 }
 
 enum class VideoExportQuality(val label: String, val subtitle: String, val targetHeight: Int?) {
-    ORIGINAL("Original", "Preserve source resolution", null),
+    ORIGINAL("Original", "Source resolution", null),
     HD_1080P("1080p HD", "Crisp full HD MP4", 1080),
-    COMPACT_720P("720p Compact", "Faster export & smaller file", 720)
+    COMPACT_720P("720p Compact", "Faster & smaller file", 720)
 }
 
 enum class ImageExportFormat(
@@ -65,7 +65,7 @@ enum class ImageExportFormat(
     val compressFormat: Bitmap.CompressFormat,
     val quality: Int
 ) {
-    JPG_HIGH("JPG High", "Compact high-quality photo", "image/jpeg", "jpg", Bitmap.CompressFormat.JPEG, 95),
+    JPG_HIGH("JPG High", "Compact high quality", "image/jpeg", "jpg", Bitmap.CompressFormat.JPEG, 95),
     PNG_LOSSLESS("PNG Lossless", "Zero compression loss", "image/png", "png", Bitmap.CompressFormat.PNG, 100)
 }
 
@@ -155,10 +155,6 @@ data class FaceTrack(
     val isSelected: Boolean = true,
     val isStaticImage: Boolean = false
 ) {
-    /**
-     * Returns the interpolated normalized face rect at [timestampMs], or null if this face
-     * is not present near [timestampMs] (beyond [maxGapMs] from nearest detected frame).
-     */
     fun rectAt(timestampMs: Long, maxGapMs: Long = 850L): NormalizedRect? {
         if (keyframes.isEmpty()) return null
         if (isStaticImage || keyframes.size == 1) {
@@ -179,7 +175,6 @@ data class FaceTrack(
             return if (timestampMs - last.timestampMs <= maxGapMs) last.rect else null
         }
 
-        // Binary search for surrounding keyframes
         var lo = 0
         var hi = keyframes.lastIndex
         while (lo <= hi) {
@@ -214,23 +209,23 @@ data class ManualMaskBox(
 
 data class FaceMaskConfig(
     val mode: MaskMode = MaskMode.GAUSSIAN_BLUR,
-    val blurIntensity: Float = 0.72f,       // 0.15f .. 1.0f
-    val pixelBlockSize: Float = 0.55f,      // 0.1f .. 1.0f
-    val solidColorArgb: Int = 0xFF090B10.toInt(),
+    val blurIntensity: Float = 0.72f,
+    val pixelBlockSize: Float = 0.55f,
+    val solidColorArgb: Int = 0xFF0E1014.toInt(),
     val selectedEmoji: String = "\uD83D\uDE0E", // 😎
     val stickerUri: Uri? = null,
-    val stickerScale: Float = 1.2f,         // 0.7f .. 2.0f
+    val stickerScale: Float = 1.2f,
     val applyToAllFaces: Boolean = true
 )
 
 data class WatermarkConfig(
     val type: WatermarkType = WatermarkType.NONE,
     val text: String = "MaskFrame",
-    val fontSizeSp: Float = 26f,            // 12f .. 64f
+    val fontSizeSp: Float = 26f,
     val textColorArgb: Int = 0xFFFFFFFF.toInt(),
     val logoUri: Uri? = null,
-    val logoScale: Float = 0.22f,           // 0.08f .. 0.48f (fraction of media width)
-    val opacity: Float = 0.85f,             // 0.1f .. 1.0f
+    val logoScale: Float = 0.22f,
+    val opacity: Float = 0.85f,
     val preset: WatermarkPositionPreset = WatermarkPositionPreset.BOTTOM_RIGHT,
     val normalizedX: Float = WatermarkPositionPreset.BOTTOM_RIGHT.normalizedX,
     val normalizedY: Float = WatermarkPositionPreset.BOTTOM_RIGHT.normalizedY
@@ -250,10 +245,6 @@ data class TrimCutConfig(
     val trimEndMs: Long = 0L,
     val cutSegments: List<CutSegment> = emptyList()
 ) {
-    /**
-     * Returns sorted, non-overlapping kept timestamp intervals inside [trimStartMs, trimEndMs]
-     * with all interior [cutSegments] excised.
-     */
     fun keptRanges(): List<LongRange> {
         if (totalDurationMs <= 0L) return emptyList()
         val start = trimStartMs.coerceIn(0L, totalDurationMs)
@@ -268,7 +259,6 @@ data class TrimCutConfig(
             }
             .sortedBy { it.first }
 
-        // Merge overlapping cuts
         val mergedCuts = mutableListOf<Pair<Long, Long>>()
         for (cut in sortedCuts) {
             if (mergedCuts.isEmpty()) {
@@ -300,10 +290,6 @@ data class TrimCutConfig(
     val outputDurationMs: Long
         get() = keptRanges().sumOf { (it.last - it.first).coerceAtLeast(0L) }
 
-    /**
-     * Maps an output timeline timestamp (in milliseconds, after trimming & cutting) back to the
-     * original source video timestamp so face tracks stay locked to the right frames during export.
-     */
     fun outputTimeMsToSourceTimeMs(outputMs: Long): Long {
         val ranges = keptRanges()
         if (ranges.isEmpty()) return outputMs
@@ -321,7 +307,12 @@ data class TrimCutConfig(
 
 sealed interface FaceScanState {
     data object Idle : FaceScanState
-    data class Scanning(val progress: Float, val framesScanned: Int, val totalFrames: Int) : FaceScanState
+    data class Scanning(
+        val progress: Float,
+        val framesScanned: Int,
+        val totalFrames: Int,
+        val isAutoImportScan: Boolean = false
+    ) : FaceScanState
     data class Completed(val faceCount: Int) : FaceScanState
     data class Error(val message: String) : FaceScanState
 }
@@ -339,6 +330,46 @@ sealed interface ExportState {
     data class Error(val message: String) : ExportState
 }
 
+enum class BatchItemStatus {
+    QUEUED,
+    DETECTING_FACES,
+    RENDERING,
+    SAVED,
+    FAILED
+}
+
+data class BatchQueueItem(
+    val id: String = UUID.randomUUID().toString(),
+    val uri: Uri,
+    val displayName: String,
+    val mediaType: MediaType,
+    val status: BatchItemStatus = BatchItemStatus.QUEUED,
+    val detectedFaces: Int = 0,
+    val outputUri: Uri? = null,
+    val outputMimeType: String? = null,
+    val errorMessage: String? = null
+)
+
+sealed interface BatchExportState {
+    data object Idle : BatchExportState
+    data class Configuring(
+        val items: List<BatchQueueItem>,
+        val includeWatermark: Boolean
+    ) : BatchExportState
+    data class Processing(
+        val items: List<BatchQueueItem>,
+        val currentIndex: Int,
+        val itemProgress: Float,
+        val overallProgress: Float,
+        val stage: String
+    ) : BatchExportState
+    data class Completed(
+        val items: List<BatchQueueItem>,
+        val savedUris: List<Uri>
+    ) : BatchExportState
+    data class Error(val message: String) : BatchExportState
+}
+
 data class EditSnapshot(
     val faceTracks: List<FaceTrack>,
     val manualBoxes: List<ManualMaskBox>,
@@ -350,6 +381,7 @@ data class EditSnapshot(
 data class EditorUiState(
     val mediaAsset: MediaAsset? = null,
     val activeTab: EditorTab = EditorTab.FACE_MASK,
+    val autoDetectAndBlurOnImport: Boolean = true,
     val scanAccuracy: ScanAccuracy = ScanAccuracy.BALANCED,
     val faceScanState: FaceScanState = FaceScanState.Idle,
     val faceTracks: List<FaceTrack> = emptyList(),
@@ -368,14 +400,14 @@ data class EditorUiState(
     val isComparingOriginal: Boolean = false,
     val canUndo: Boolean = false,
     val canRedo: Boolean = false,
+    val undoCount: Int = 0,
+    val redoCount: Int = 0,
     val videoExportQuality: VideoExportQuality = VideoExportQuality.ORIGINAL,
     val imageExportFormat: ImageExportFormat = ImageExportFormat.JPG_HIGH,
     val exportState: ExportState = ExportState.Idle,
+    val batchExportState: BatchExportState = BatchExportState.Idle,
     val snackbarMessage: String? = null
 ) {
-    /**
-     * Active normalized rectangles that should be masked at [timestampMs] for rendering or preview.
-     */
     fun activeMaskRectsAt(timestampMs: Long): List<NormalizedRect> {
         val rects = mutableListOf<NormalizedRect>()
         for (track in faceTracks) {
@@ -392,22 +424,22 @@ data class EditorUiState(
 
 object StudioPalettes {
     val maskSolidColors: List<Color> = listOf(
-        Color(0xFF090B10),
-        Color(0xFF1F2937),
-        Color(0xFFFFFFFF),
-        Color(0xFF00E5FF),
-        Color(0xFFFF4D6D),
-        Color(0xFFFFB74D),
-        Color(0xFF22E58B)
+        Color(0xFF0E1014),
+        Color(0xFF232833),
+        Color(0xFFF4F5F7),
+        Color(0xFFF5A623),
+        Color(0xFFE55353),
+        Color(0xFF2CC984),
+        Color(0xFF4F8FF7)
     )
 
     val watermarkTextColors: List<Color> = listOf(
         Color(0xFFFFFFFF),
-        Color(0xFF00E5FF),
-        Color(0xFF090B10),
-        Color(0xFFFFD166),
-        Color(0xFFFF4D6D),
-        Color(0xFF22E58B)
+        Color(0xFFF5A623),
+        Color(0xFF0E1014),
+        Color(0xFFE55353),
+        Color(0xFF2CC984),
+        Color(0xFFDCE1EA)
     )
 
     val privacyEmojis: List<String> = listOf(
