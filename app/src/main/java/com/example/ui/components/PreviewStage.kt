@@ -1,5 +1,7 @@
 package com.example.ui.components
 
+import android.graphics.Bitmap
+import android.view.LayoutInflater
 import androidx.annotation.OptIn
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
@@ -17,6 +19,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -29,6 +32,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -39,20 +44,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.BlendMode
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ColorFilter
-import androidx.compose.ui.graphics.ColorMatrix
-import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
@@ -63,26 +63,35 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import com.example.R
+import com.example.engine.MaskRenderUtils
+import com.example.engine.MediaMetadataLoader
 import com.example.model.EditorTab
 import com.example.model.EditorUiState
 import com.example.model.FaceScanState
 import com.example.model.ManualMaskBox
 import com.example.model.MaskMode
 import com.example.model.MediaType
-import com.example.model.NormalizedRect
 import com.example.model.ResolvedMaskInstance
 import com.example.model.TextOverlayItem
 import com.example.model.TextOverlayStyle
 import com.example.model.WatermarkType
 import com.example.ui.theme.TimecodeTextStyle
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlin.math.abs
+import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 
+/**
+ * True WYSIWYG Preview Monitor matching the exact Export output:
+ * - Photos render live pixels through [MaskRenderUtils.renderImagePreviewBase] (identical to JPG/PNG export).
+ * - Videos run live GPU [PrivacyMaskGlEffect] + [ColorGradeGlEffect] on a TextureView-backed [PlayerView]
+ *   inside an exact cover-crop [TransformConfig] viewport (identical to Media3 Transformer MP4 export).
+ */
 @OptIn(UnstableApi::class)
 @Composable
 fun PreviewStage(
@@ -101,6 +110,7 @@ fun PreviewStage(
     modifier: Modifier = Modifier
 ) {
     val asset = uiState.mediaAsset ?: return
+    val context = LocalContext.current
     val density = LocalDensity.current
     val primaryColor = MaterialTheme.colorScheme.primary
     var isDraggingOverlay by remember { mutableStateOf(false) }
@@ -108,11 +118,78 @@ fun PreviewStage(
     val showEdited = !uiState.isComparingOriginal
     val transform = uiState.transformConfig
     val colorGrade = uiState.colorGradeConfig
+    val isVideo = asset.type == MediaType.VIDEO
+
     val displayAspect = if (showEdited) {
         transform.effectiveAspectRatio(asset.width, asset.height)
     } else {
         asset.aspectRatio
-    }.coerceIn(0.45f, 2.4f)
+    }.coerceIn(0.42f, 2.45f)
+
+    // -------------------------------------------------------------------------
+    // 100% Pixel-Identical Photo Preview Pipeline (exact MaskRenderUtils output)
+    // -------------------------------------------------------------------------
+    val metadataLoader = remember(context) { MediaMetadataLoader(context.applicationContext) }
+    var imageSourceBitmap by remember(asset.uri) { mutableStateOf<Bitmap?>(null) }
+    var imageRenderedBitmap by remember(asset.uri) { mutableStateOf<Bitmap?>(null) }
+
+    LaunchedEffect(asset.uri, isVideo) {
+        if (isVideo) {
+            imageSourceBitmap = null
+            imageRenderedBitmap = null
+        } else {
+            val decoded = metadataLoader.decodeOrientedBitmap(asset.uri, maxDimension = 1280)
+            imageSourceBitmap = decoded
+        }
+    }
+
+    val imageResolvedMasks = remember(
+        isVideo,
+        uiState.faceTracks,
+        uiState.manualBoxes,
+        uiState.maskConfig
+    ) {
+        if (isVideo) emptyList() else uiState.resolvedMasksAt(0L)
+    }
+
+    LaunchedEffect(
+        isVideo,
+        imageSourceBitmap,
+        showEdited,
+        imageResolvedMasks,
+        uiState.stickerBitmap,
+        colorGrade,
+        transform
+    ) {
+        if (isVideo) return@LaunchedEffect
+        val src = imageSourceBitmap ?: return@LaunchedEffect
+        if (src.isRecycled) return@LaunchedEffect
+        if (!showEdited) {
+            imageRenderedBitmap = null
+            return@LaunchedEffect
+        }
+        val rendered = withContext(Dispatchers.Default) {
+            MaskRenderUtils.renderImagePreviewBase(
+                sourceBitmap = src,
+                resolvedMasks = imageResolvedMasks,
+                stickerBitmap = uiState.stickerBitmap,
+                colorGradeConfig = colorGrade,
+                transformConfig = transform
+            )
+        }
+        val previous = imageRenderedBitmap
+        imageRenderedBitmap = rendered
+        if (previous != null && previous !== rendered && !previous.isRecycled) {
+            previous.recycle()
+        }
+    }
+
+    DisposableEffect(asset.uri) {
+        onDispose {
+            imageRenderedBitmap?.let { if (!it.isRecycled) it.recycle() }
+            imageSourceBitmap?.let { if (!it.isRecycled) it.recycle() }
+        }
+    }
 
     Box(
         modifier = modifier
@@ -127,7 +204,7 @@ fun PreviewStage(
             .padding(horizontal = 16.dp, vertical = 10.dp),
         contentAlignment = Alignment.Center
     ) {
-        // Aspect-ratio-locked footage monitor
+        // Exact export-aspect-ratio footage monitor
         BoxWithConstraints(
             modifier = Modifier
                 .aspectRatio(displayAspect, matchHeightConstraintsFirst = false)
@@ -138,30 +215,49 @@ fun PreviewStage(
         ) {
             val stageWidthPx = with(density) { maxWidth.toPx() }.coerceAtLeast(1f)
             val stageHeightPx = with(density) { maxHeight.toPx() }.coerceAtLeast(1f)
-            val timestampMs = if (asset.type == MediaType.VIDEO) uiState.currentPlaybackMs else 0L
+            val timestampMs = if (isVideo) uiState.currentPlaybackMs else 0L
 
-            // Pre-transform footage + privacy masks layer (inherits Rotate, Flip, Zoom)
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .graphicsLayer {
-                        if (showEdited) {
-                            val zoom = transform.zoomScale.coerceIn(1f, 2f)
-                            scaleX = zoom * (if (transform.flipHorizontal) -1f else 1f)
-                            scaleY = zoom * (if (transform.flipVertical) -1f else 1f)
-                            rotationZ = transform.rotationDegrees.toFloat()
+            // Exact source-to-viewport transform math matching MaskRenderUtils.applyTransform
+            // and MediaExportEngine.addTransformEffects (Flip -> Rotate -> Aspect Cover Crop -> Zoom).
+            val rotDeg = if (showEdited) ((transform.rotationDegrees % 360) + 360) % 360 else 0
+            val isRotated90 = (rotDeg % 180) != 0
+            val srcRatio = asset.aspectRatio.coerceIn(0.3f, 3.0f)
+            val rotRatio = if (isRotated90) 1f / srcRatio else srcRatio
+            val outRatio = stageWidthPx / stageHeightPx
+
+            val rotBoxW: Float
+            val rotBoxH: Float
+            if (rotRatio > outRatio) {
+                rotBoxH = stageHeightPx
+                rotBoxW = stageHeightPx * rotRatio
+            } else {
+                rotBoxW = stageWidthPx
+                rotBoxH = stageWidthPx / rotRatio
+            }
+            val srcBoxW = if (isRotated90) rotBoxH else rotBoxW
+            val srcBoxH = if (isRotated90) rotBoxW else rotBoxH
+            val srcBoxWDp = with(density) { srcBoxW.toDp() }
+            val srcBoxHDp = with(density) { srcBoxH.toDp() }
+            val zoomScale = if (showEdited) transform.zoomScale.coerceIn(1.0f, 2.0f) else 1.0f
+            val flipX = if (showEdited && transform.flipHorizontal) -1f else 1f
+            val flipY = if (showEdited && transform.flipVertical) -1f else 1f
+
+            // 1. Rendered Media Layer (WYSIWYG Photo Bitmap OR Live GPU-Shaded Video TextureView)
+            if (isVideo && exoPlayer != null) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .requiredSize(srcBoxWDp, srcBoxHDp)
+                        .graphicsLayer {
+                            scaleX = zoomScale * flipX
+                            scaleY = zoomScale * flipY
+                            rotationZ = rotDeg.toFloat()
                         }
-                    }
-            ) {
-                // 1. Underlying Footage (ExoPlayer or Coil)
-                if (asset.type == MediaType.VIDEO && exoPlayer != null) {
+                ) {
                     AndroidView(
                         factory = { ctx ->
-                            PlayerView(ctx).apply {
+                            (LayoutInflater.from(ctx).inflate(R.layout.view_texture_player, null) as PlayerView).apply {
                                 player = exoPlayer
-                                useController = false
-                                resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                                setShutterBackgroundColor(android.graphics.Color.BLACK)
                             }
                         },
                         update = { view ->
@@ -171,146 +267,88 @@ fun PreviewStage(
                         },
                         modifier = Modifier.fillMaxSize()
                     )
-                } else {
-                    val imgColorFilter = remember(showEdited, colorGrade) {
-                        if (showEdited && !colorGrade.isDefault()) {
-                            ColorFilter.colorMatrix(ColorMatrix(colorGrade.toColorMatrix20()))
-                        } else {
-                            null
-                        }
-                    }
-                    AsyncImage(
-                        model = asset.uri,
-                        contentDescription = asset.displayName,
-                        contentScale = ContentScale.Crop,
-                        colorFilter = imgColorFilter,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                }
 
-                // 2. Live Color Grade Overlay (for Video preview tint/brightness/desat + Vignette for both)
-                if (showEdited && !colorGrade.isDefault()) {
-                    Canvas(modifier = Modifier.fillMaxSize()) {
-                        if (asset.type == MediaType.VIDEO) {
-                            if (colorGrade.brightness > 0.01f) {
-                                drawRect(Color.White.copy(alpha = (colorGrade.brightness * 0.55f).coerceIn(0f, 0.35f)))
-                            } else if (colorGrade.brightness < -0.01f) {
-                                drawRect(Color.Black.copy(alpha = (-colorGrade.brightness * 0.7f).coerceIn(0f, 0.45f)))
-                            }
-                            if (colorGrade.warmth > 0.02f) {
-                                drawRect(Color(0xFFFFA73B).copy(alpha = (colorGrade.warmth * 0.28f).coerceIn(0f, 0.22f)))
-                            } else if (colorGrade.warmth < -0.02f) {
-                                drawRect(Color(0xFF4F8FF7).copy(alpha = (-colorGrade.warmth * 0.28f).coerceIn(0f, 0.22f)))
-                            }
-                            if (colorGrade.saturation < 0.25f) {
-                                // Subtle monochrome cinema wash for Noir preview on video
-                                drawRect(Color(0xFF14171D).copy(alpha = ((0.25f - colorGrade.saturation) * 0.65f).coerceIn(0f, 0.22f)))
-                            }
-                        }
-                        if (colorGrade.vignette > 0.01f) {
-                            drawRect(
-                                brush = Brush.radialGradient(
-                                    colors = listOf(
-                                        Color.Transparent,
-                                        Color.Transparent,
-                                        Color.Black.copy(alpha = (colorGrade.vignette * 0.92f).coerceIn(0f, 0.85f))
-                                    ),
-                                    center = Offset(size.width * 0.5f, size.height * 0.5f),
-                                    radius = maxOf(size.width, size.height) * 0.74f
-                                )
-                            )
-                        }
-                    }
-                }
-
-                // 3. Privacy Masks (Per-Face & Manual)
-                if (showEdited) {
-                    val activeResolved = uiState.resolvedMasksAt(timestampMs)
-                    val spotlightMasks = activeResolved.filter { it.mode == MaskMode.SPOTLIGHT }
-
-                    // Spotlight inverted mask layer: dims/frosted everything OUTSIDE spotlight faces
-                    if (spotlightMasks.isNotEmpty()) {
-                        val spotStrength = spotlightMasks.maxOf { it.blurIntensity }
-                        val spotOpacity = spotlightMasks.maxOf { it.opacity }
-                        Canvas(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
-                        ) {
-                            drawRect(
-                                color = Color(0xFF0B0D12).copy(
-                                    alpha = ((0.48f + spotStrength * 0.42f) * spotOpacity).coerceIn(0.2f, 0.92f)
-                                )
-                            )
-                            for (spot in spotlightMasks) {
-                                val r = spot.rect
-                                val w = (r.width * size.width).coerceAtLeast(12f)
-                                val h = (r.height * size.height).coerceAtLeast(12f)
-                                val path = buildMaskComposePath(spot.shape, Size(w, h))
-                                translate(left = r.left * size.width, top = r.top * size.height) {
-                                    drawPath(path = path, color = Color.Transparent, blendMode = BlendMode.Clear)
-                                }
-                            }
-                        }
-                    }
-
-                    for (track in uiState.faceTracks) {
-                        val baseRect = track.rectAt(timestampMs) ?: continue
-                        val isMasked = uiState.maskConfig.applyToAllFaces || track.isSelected
-                        val resolved = uiState.resolveTrackMask(track, baseRect)
-                        val isFocused = uiState.selectedFaceTrackId == track.id
-                        FaceOverlayItem(
-                            resolved = resolved,
-                            label = track.label,
-                            isMasked = isMasked,
-                            isFocused = isFocused,
-                            hasCustomStyle = track.styleOverride?.hasAnyOverride() == true,
-                            showSelectionChrome = uiState.activeTab == EditorTab.FACE_MASK,
-                            stickerBitmap = uiState.stickerBitmap,
-                            stageWidthPx = stageWidthPx,
-                            stageHeightPx = stageHeightPx,
-                            onClick = { onSelectFaceForEditing(track.id) }
-                        )
-                    }
-
-                    for (box in uiState.manualBoxes) {
-                        val resolved = ResolvedMaskInstance(
-                            rect = box.rect,
-                            mode = uiState.maskConfig.mode,
-                            shape = uiState.maskConfig.shape,
-                            blurIntensity = uiState.maskConfig.blurIntensity,
-                            pixelBlockSize = uiState.maskConfig.pixelBlockSize,
-                            feather = uiState.maskConfig.feather,
-                            opacity = uiState.maskConfig.opacity,
-                            solidColorArgb = uiState.maskConfig.solidColorArgb,
-                            selectedEmoji = uiState.maskConfig.selectedEmoji,
-                            stickerScale = uiState.maskConfig.stickerScale
-                        )
-                        ManualBoxOverlayItem(
-                            box = box,
-                            resolved = resolved,
-                            isSelected = uiState.selectedManualBoxId == box.id && uiState.activeTab == EditorTab.FACE_MASK,
-                            showHandles = uiState.activeTab == EditorTab.FACE_MASK,
-                            stickerBitmap = uiState.stickerBitmap,
-                            stageWidthPx = stageWidthPx,
-                            stageHeightPx = stageHeightPx,
-                            onSelect = { onSelectManualBox(box.id) },
+                    // For Video: all 7 shader modes (Blur, Mosaic, Frosted, Glitch, Invert, Spotlight, Solid)
+                    // are rendered directly by GPU PrivacyMaskGlEffect on ExoPlayer!
+                    // Here we only render non-shader Emoji/Sticker overlays + interactive selection chrome/handles.
+                    if (showEdited) {
+                        SourceSpaceOverlaysLayer(
+                            uiState = uiState,
+                            timestampMs = timestampMs,
+                            renderNonShaderMasks = true,
+                            srcWidthPx = srcBoxW,
+                            srcHeightPx = srcBoxH,
+                            onSelectFaceForEditing = onSelectFaceForEditing,
+                            onSelectManualBox = onSelectManualBox,
                             onDragStart = { isDraggingOverlay = true },
                             onDragEnd = {
                                 isDraggingOverlay = false
                                 onEndContinuousEdit()
                             },
-                            onMove = { dx, dy -> onMoveManualBox(box.id, dx, dy) },
-                            onResize = { dw, dh -> onResizeManualBox(box.id, dw, dh) },
-                            onDelete = { onDeleteManualBox(box.id) }
+                            onMoveManualBox = onMoveManualBox,
+                            onResizeManualBox = onResizeManualBox,
+                            onDeleteManualBox = onDeleteManualBox
+                        )
+                    }
+                }
+            } else {
+                // Photo mode: display the EXACT rendered Bitmap from MaskRenderUtils (or original bitmap on Before)
+                val displayBitmap = if (showEdited) (imageRenderedBitmap ?: imageSourceBitmap) else imageSourceBitmap
+                val composeBitmap = remember(displayBitmap) {
+                    displayBitmap?.takeUnless { it.isRecycled }?.asImageBitmap()
+                }
+                if (composeBitmap != null) {
+                    Image(
+                        bitmap = composeBitmap,
+                        contentDescription = asset.displayName,
+                        contentScale = ContentScale.FillBounds,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    AsyncImage(
+                        model = asset.uri,
+                        contentDescription = asset.displayName,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+
+                // Interactive face selection chrome & manual box drag/resize handles aligned in source space
+                // (visual pixels are already rendered identically inside displayBitmap!)
+                if (showEdited && uiState.activeTab == EditorTab.FACE_MASK) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .requiredSize(srcBoxWDp, srcBoxHDp)
+                            .graphicsLayer {
+                                scaleX = zoomScale * flipX
+                                scaleY = zoomScale * flipY
+                                rotationZ = rotDeg.toFloat()
+                            }
+                    ) {
+                        SourceSpaceOverlaysLayer(
+                            uiState = uiState,
+                            timestampMs = 0L,
+                            renderNonShaderMasks = false,
+                            srcWidthPx = srcBoxW,
+                            srcHeightPx = srcBoxH,
+                            onSelectFaceForEditing = onSelectFaceForEditing,
+                            onSelectManualBox = onSelectManualBox,
+                            onDragStart = { isDraggingOverlay = true },
+                            onDragEnd = {
+                                isDraggingOverlay = false
+                                onEndContinuousEdit()
+                            },
+                            onMoveManualBox = onMoveManualBox,
+                            onResizeManualBox = onResizeManualBox,
+                            onDeleteManualBox = onDeleteManualBox
                         )
                     }
                 }
             }
 
-            // 4. Post-Transform Overlays: Styled Text Captions & Watermark
+            // 2. Post-Transform Overlays: Styled Text Captions & Watermark (exact MaskRenderUtils parity)
             if (showEdited) {
-                val isVideo = asset.type == MediaType.VIDEO
                 for (textItem in uiState.textOverlays) {
                     if (!textItem.isVisibleAt(timestampMs, isVideo)) continue
                     TextCaptionOverlayView(
@@ -383,7 +421,7 @@ fun PreviewStage(
                 }
             }
 
-            // Instant ORIGINAL Indicator Badge when viewing Before state
+            // 3. Instant ORIGINAL Indicator Badge when viewing Before state
             if (uiState.isComparingOriginal) {
                 Surface(
                     shape = RoundedCornerShape(8.dp),
@@ -403,14 +441,14 @@ fun PreviewStage(
                 }
             }
 
-            // Live Auto-Detect & Blur floating pill on the footage monitor during ML Kit scan
+            // 4. Live Auto-Detect & Blur floating pill during ML Kit scan
             val scanState = uiState.faceScanState
             if (scanState is FaceScanState.Scanning) {
                 val percent = (scanState.progress * 100f).roundToInt().coerceIn(0, 100)
                 val liveFaces = uiState.faceTracks.size
                 val statusLabel = buildString {
                     append(if (scanState.isAutoImportScan) "Auto-Detect & Blur" else "Scanning Faces")
-                    if (asset.type == MediaType.VIDEO) {
+                    if (isVideo) {
                         append(" $percent%")
                     }
                     if (liveFaces > 0) {
@@ -449,22 +487,93 @@ fun PreviewStage(
 }
 
 @Composable
-private fun FaceOverlayItem(
+private fun SourceSpaceOverlaysLayer(
+    uiState: EditorUiState,
+    timestampMs: Long,
+    renderNonShaderMasks: Boolean,
+    srcWidthPx: Float,
+    srcHeightPx: Float,
+    onSelectFaceForEditing: (Int) -> Unit,
+    onSelectManualBox: (String?) -> Unit,
+    onDragStart: () -> Unit,
+    onDragEnd: () -> Unit,
+    onMoveManualBox: (String, Float, Float) -> Unit,
+    onResizeManualBox: (String, Float, Float) -> Unit,
+    onDeleteManualBox: (String) -> Unit
+) {
+    val showSelectionChrome = uiState.activeTab == EditorTab.FACE_MASK
+
+    for (track in uiState.faceTracks) {
+        val baseRect = track.rectAt(timestampMs) ?: continue
+        val isMasked = uiState.maskConfig.applyToAllFaces || track.isSelected
+        val resolved = uiState.resolveTrackMask(track, baseRect)
+        val isFocused = uiState.selectedFaceTrackId == track.id
+        FaceOverlayChromeAndSticker(
+            resolved = resolved,
+            label = track.label,
+            isMasked = isMasked,
+            isFocused = isFocused,
+            hasCustomStyle = track.styleOverride?.hasAnyOverride() == true,
+            showSelectionChrome = showSelectionChrome,
+            renderNonShaderOverlay = renderNonShaderMasks && isMasked && !resolved.mode.isShaderEffect,
+            stickerBitmap = uiState.stickerBitmap,
+            stageWidthPx = srcWidthPx,
+            stageHeightPx = srcHeightPx,
+            onClick = { onSelectFaceForEditing(track.id) }
+        )
+    }
+
+    for (box in uiState.manualBoxes) {
+        val resolved = ResolvedMaskInstance(
+            rect = box.rect,
+            mode = uiState.maskConfig.mode,
+            shape = uiState.maskConfig.shape,
+            blurIntensity = uiState.maskConfig.blurIntensity,
+            pixelBlockSize = uiState.maskConfig.pixelBlockSize,
+            feather = uiState.maskConfig.feather,
+            opacity = uiState.maskConfig.opacity,
+            solidColorArgb = uiState.maskConfig.solidColorArgb,
+            selectedEmoji = uiState.maskConfig.selectedEmoji,
+            stickerScale = uiState.maskConfig.stickerScale
+        )
+        ManualBoxOverlayItem(
+            box = box,
+            resolved = resolved,
+            isSelected = uiState.selectedManualBoxId == box.id && showSelectionChrome,
+            showHandles = showSelectionChrome,
+            renderNonShaderOverlay = renderNonShaderMasks && !resolved.mode.isShaderEffect,
+            stickerBitmap = uiState.stickerBitmap,
+            stageWidthPx = srcWidthPx,
+            stageHeightPx = srcHeightPx,
+            onSelect = { onSelectManualBox(box.id) },
+            onDragStart = onDragStart,
+            onDragEnd = onDragEnd,
+            onMove = { dx, dy -> onMoveManualBox(box.id, dx, dy) },
+            onResize = { dw, dh -> onResizeManualBox(box.id, dw, dh) },
+            onDelete = { onDeleteManualBox(box.id) }
+        )
+    }
+}
+
+@Composable
+private fun FaceOverlayChromeAndSticker(
     resolved: ResolvedMaskInstance,
     label: String,
     isMasked: Boolean,
     isFocused: Boolean,
     hasCustomStyle: Boolean,
     showSelectionChrome: Boolean,
-    stickerBitmap: android.graphics.Bitmap?,
+    renderNonShaderOverlay: Boolean,
+    stickerBitmap: Bitmap?,
     stageWidthPx: Float,
     stageHeightPx: Float,
     onClick: () -> Unit
 ) {
+    if (!showSelectionChrome && !renderNonShaderOverlay) return
     val density = LocalDensity.current
     val rect = resolved.rect
-    val boxW = (rect.width * stageWidthPx).coerceAtLeast(28f)
-    val boxH = (rect.height * stageHeightPx).coerceAtLeast(28f)
+    val boxW = (rect.width * stageWidthPx).coerceAtLeast(24f)
+    val boxH = (rect.height * stageHeightPx).coerceAtLeast(24f)
     val leftPx = (rect.left * stageWidthPx).roundToInt()
     val topPx = (rect.top * stageHeightPx).roundToInt()
     val widthDp = with(density) { boxW.toDp() }
@@ -476,11 +585,11 @@ private fun FaceOverlayItem(
         modifier = Modifier
             .offset { IntOffset(leftPx, topPx) }
             .size(widthDp, heightDp)
-            .clickable(onClick = onClick)
+            .then(if (showSelectionChrome) Modifier.clickable(onClick = onClick) else Modifier)
             .testTag("face_overlay_${label.lowercase().replace(' ', '_')}")
     ) {
-        if (isMasked && resolved.mode != MaskMode.SPOTLIGHT) {
-            MaskVisualFill(
+        if (renderNonShaderOverlay) {
+            EmojiOrStickerVisual(
                 resolved = resolved,
                 stickerBitmap = stickerBitmap,
                 boxWidthPx = boxW,
@@ -494,21 +603,21 @@ private fun FaceOverlayItem(
                 modifier = Modifier
                     .fillMaxSize()
                     .border(
-                        width = if (isFocused) 2.dp else if (isMasked) 1.25.dp else 1.dp,
+                        width = if (isFocused) 2.dp else 1.dp,
                         color = when {
                             isFocused -> primaryColor
-                            isMasked -> primaryColor.copy(alpha = 0.72f)
-                            else -> Color.White.copy(alpha = 0.45f)
+                            isMasked -> primaryColor.copy(alpha = 0.52f)
+                            else -> Color.White.copy(alpha = 0.42f)
                         },
                         shape = clipShape
                     )
             )
             Surface(
                 shape = RoundedCornerShape(5.dp),
-                color = if (isFocused || isMasked) primaryColor else Color(0xCC14171D),
+                color = if (isFocused) primaryColor else Color(0xAA14171D),
                 modifier = Modifier
                     .align(Alignment.TopStart)
-                    .padding(4.dp)
+                    .padding(3.dp)
             ) {
                 Text(
                     text = buildString {
@@ -517,7 +626,7 @@ private fun FaceOverlayItem(
                         else if (hasCustomStyle) append(" ★")
                     },
                     style = MaterialTheme.typography.labelSmall,
-                    color = if (isFocused || isMasked) MaterialTheme.colorScheme.onPrimary else Color.White,
+                    color = if (isFocused) MaterialTheme.colorScheme.onPrimary else Color.White,
                     modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
                 )
             }
@@ -531,7 +640,8 @@ private fun ManualBoxOverlayItem(
     resolved: ResolvedMaskInstance,
     isSelected: Boolean,
     showHandles: Boolean,
-    stickerBitmap: android.graphics.Bitmap?,
+    renderNonShaderOverlay: Boolean,
+    stickerBitmap: Bitmap?,
     stageWidthPx: Float,
     stageHeightPx: Float,
     onSelect: () -> Unit,
@@ -541,6 +651,7 @@ private fun ManualBoxOverlayItem(
     onResize: (Float, Float) -> Unit,
     onDelete: () -> Unit
 ) {
+    if (!showHandles && !renderNonShaderOverlay) return
     val density = LocalDensity.current
     val currentMove by rememberUpdatedState(onMove)
     val currentResize by rememberUpdatedState(onResize)
@@ -574,8 +685,8 @@ private fun ManualBoxOverlayItem(
             }
             .testTag("manual_mask_box")
     ) {
-        if (resolved.mode != MaskMode.SPOTLIGHT) {
-            MaskVisualFill(
+        if (renderNonShaderOverlay) {
+            EmojiOrStickerVisual(
                 resolved = resolved,
                 stickerBitmap = stickerBitmap,
                 boxWidthPx = boxW,
@@ -590,7 +701,7 @@ private fun ManualBoxOverlayItem(
                     .fillMaxSize()
                     .border(
                         width = if (isSelected) 1.5.dp else 1.dp,
-                        color = if (isSelected) primaryColor else primaryColor.copy(alpha = 0.65f),
+                        color = if (isSelected) primaryColor else primaryColor.copy(alpha = 0.6f),
                         shape = clipShape
                     )
             )
@@ -652,152 +763,20 @@ private fun ManualBoxOverlayItem(
 }
 
 @Composable
-private fun MaskVisualFill(
+private fun EmojiOrStickerVisual(
     resolved: ResolvedMaskInstance,
-    stickerBitmap: android.graphics.Bitmap?,
+    stickerBitmap: Bitmap?,
     boxWidthPx: Float,
     boxHeightPx: Float,
     modifier: Modifier = Modifier
 ) {
     val density = LocalDensity.current
-    val shape = remember(resolved.shape) { maskComposeShape(resolved.shape) }
     val alphaScale = resolved.opacity.coerceIn(0.25f, 1f)
-    val edgeAlpha = (1f - resolved.feather * 0.68f).coerceIn(0.25f, 1f)
 
     when (resolved.mode) {
-        MaskMode.GAUSSIAN_BLUR -> {
-            val baseAlpha = (0.58f + resolved.blurIntensity * 0.36f) * alphaScale
-            Box(
-                modifier = modifier
-                    .clip(shape)
-                    .background(
-                        Brush.radialGradient(
-                            colors = listOf(
-                                Color(0xFFD4CFC7).copy(alpha = baseAlpha),
-                                Color(0xFF333740).copy(alpha = baseAlpha * edgeAlpha)
-                            )
-                        )
-                    )
-            )
-        }
-
-        MaskMode.FROSTED_GLASS -> {
-            val baseAlpha = (0.60f + resolved.blurIntensity * 0.34f) * alphaScale
-            Canvas(modifier = modifier.clip(shape)) {
-                drawRect(
-                    brush = Brush.linearGradient(
-                        colors = listOf(
-                            Color(0xFFEAF2FA).copy(alpha = baseAlpha * 0.92f),
-                            Color(0xFFB5C4D4).copy(alpha = baseAlpha * edgeAlpha)
-                        )
-                    )
-                )
-                val step = (size.minDimension / 12f).coerceAtLeast(5f)
-                var y = 0f
-                var row = 0
-                while (y < size.height) {
-                    var x = 0f
-                    var col = 0
-                    while (x < size.width) {
-                        if ((row * 7 + col * 13) % 3 == 0) {
-                            drawRect(
-                                color = Color.White.copy(alpha = 0.14f * alphaScale),
-                                topLeft = Offset(x, y),
-                                size = Size(step * 0.7f, step * 0.7f)
-                            )
-                        }
-                        x += step
-                        col++
-                    }
-                    y += step
-                    row++
-                }
-            }
-        }
-
-        MaskMode.GLITCH -> {
-            Canvas(modifier = modifier.clip(shape).alpha(alphaScale)) {
-                val slices = (6 + (resolved.blurIntensity * 10f).roundToInt()).coerceIn(6, 16)
-                val sliceH = size.height / slices
-                for (i in 0 until slices) {
-                    val shift = if (i % 2 == 0) 6f else -6f
-                    val stripeColor = when (i % 4) {
-                        0 -> Color(0xDD1A1F2B)
-                        1 -> Color(0xDDF5A623)
-                        2 -> Color(0xDD27D7E8)
-                        else -> Color(0xDDE55378)
-                    }
-                    drawRect(
-                        color = stripeColor,
-                        topLeft = Offset(shift, i * sliceH),
-                        size = Size(size.width, sliceH + 0.6f)
-                    )
-                }
-            }
-        }
-
-        MaskMode.INVERT -> {
-            Canvas(modifier = modifier.clip(shape).alpha(alphaScale)) {
-                drawRect(
-                    brush = Brush.linearGradient(
-                        colors = listOf(
-                            Color(0xCC21E6C1),
-                            Color(0xCC7B5CFF),
-                            Color(0xCCFF5E94)
-                        )
-                    )
-                )
-                drawRect(
-                    color = Color.White.copy(alpha = 0.25f),
-                    style = Stroke(width = 2.dp.toPx())
-                )
-            }
-        }
-
-        MaskMode.PIXELATE -> {
-            val cols = (12 - (resolved.pixelBlockSize * 8f).roundToInt()).coerceIn(4, 12)
-            Canvas(modifier = modifier.clip(shape).alpha(alphaScale)) {
-                val cellW = size.width / cols
-                val rows = (size.height / cellW).roundToInt().coerceAtLeast(3)
-                val cellH = size.height / rows
-                for (r in 0 until rows) {
-                    for (c in 0 until cols) {
-                        val shade = ((r * 31 + c * 17) % 5)
-                        val tileColor = when (shade) {
-                            0 -> Color(0xE01F232B)
-                            1 -> Color(0xE0323844)
-                            2 -> Color(0xE0474E5E)
-                            3 -> Color(0xE0292E38)
-                            else -> Color(0xE05B6273)
-                        }
-                        drawRect(
-                            color = tileColor,
-                            topLeft = Offset(c * cellW, r * cellH),
-                            size = Size(cellW + 0.5f, cellH + 0.5f)
-                        )
-                    }
-                }
-            }
-        }
-
-        MaskMode.SOLID_COLOR -> {
-            val fill = Color(resolved.solidColorArgb)
-            Box(
-                modifier = modifier
-                    .clip(shape)
-                    .background(
-                        Brush.radialGradient(
-                            colors = listOf(
-                                fill.copy(alpha = alphaScale),
-                                fill.copy(alpha = alphaScale * edgeAlpha)
-                            )
-                        )
-                    )
-            )
-        }
-
         MaskMode.EMOJI -> {
-            val emojiSp = with(density) { (min(boxWidthPx, boxHeightPx) * 0.72f).toSp() }
+            // Exact same 0.84f sizing formula as MaskRenderUtils.drawOverlayMask
+            val emojiSp = with(density) { (min(boxWidthPx, boxHeightPx) * 0.84f).toSp() }
             Box(
                 modifier = modifier.alpha(alphaScale),
                 contentAlignment = Alignment.Center
@@ -817,21 +796,28 @@ private fun MaskVisualFill(
                 contentAlignment = Alignment.Center
             ) {
                 if (imageBitmap != null) {
-                    val scale = resolved.stickerScale.coerceIn(0.7f, 2.0f)
-                    val targetW = with(density) { (boxWidthPx * scale).toDp() }
-                    val targetH = with(density) { (boxHeightPx * scale).toDp() }
+                    // Exact same aspect-preserving sizing formula as MaskRenderUtils.drawOverlayMask
+                    val scale = resolved.stickerScale.coerceIn(0.6f, 2.2f)
+                    val baseSize = max(boxWidthPx, boxHeightPx) * scale
+                    val aspect = imageBitmap.width.toFloat() / imageBitmap.height.coerceAtLeast(1)
+                    val drawW = if (aspect >= 1f) baseSize else baseSize * aspect
+                    val drawH = if (aspect >= 1f) baseSize / aspect else baseSize
                     Image(
                         bitmap = imageBitmap,
                         contentDescription = stringResource(R.string.cd_sticker_preview),
                         contentScale = ContentScale.Fit,
-                        modifier = Modifier.size(targetW, targetH)
+                        modifier = Modifier.requiredSize(
+                            width = with(density) { drawW.toDp() },
+                            height = with(density) { drawH.toDp() }
+                        )
                     )
                 } else {
+                    val shape = remember(resolved.shape) { maskComposeShape(resolved.shape) }
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
                             .clip(shape)
-                            .background(Color(0xCC14171D)),
+                            .background(Color(0xCC090B10)),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
@@ -845,7 +831,7 @@ private fun MaskVisualFill(
             }
         }
 
-        MaskMode.SPOTLIGHT -> Unit
+        else -> Unit
     }
 }
 
@@ -866,18 +852,22 @@ private fun TextCaptionOverlayView(
     val currentDrag by rememberUpdatedState(onDrag)
     val primaryColor = MaterialTheme.colorScheme.primary
 
+    // Exact same font-size math as MaskRenderUtils.drawTextOverlays
     val minDim = min(stageWidthPx, stageHeightPx)
-    val scaledSp = with(density) { ((item.fontSizeSp / 360f) * minDim * 0.92f).coerceAtLeast(13f).toSp() }
-    val estWidthPx = (item.text.length.coerceAtLeast(4) * scaledSp.value * 0.72f * density.density + 48f)
-        .coerceIn(104f, stageWidthPx * 0.92f)
-    val estHeightPx = (scaledSp.value * 1.85f * density.density + 16f).coerceAtLeast(42f)
-    val offsetX = (item.normalizedX * stageWidthPx - estWidthPx * 0.5f).roundToInt()
-    val offsetY = (item.normalizedY * stageHeightPx - estHeightPx * 0.5f).roundToInt()
+    val textPx = ((item.fontSizeSp / 360f) * minDim * 1.05f).coerceAtLeast(16f)
+    val scaledSp = with(density) { textPx.toSp() }
+    val padHDp = with(density) { (textPx * 0.55f).toDp() }
+    val padVDp = with(density) { (textPx * 0.28f).toDp() }
+    val estWidthPx = (item.text.length.coerceAtLeast(4) * textPx * 0.68f + textPx * 1.6f)
+        .coerceIn(104f, stageWidthPx * 0.94f)
+    val estHeightPx = (textPx * 1.95f + 16f).coerceAtLeast(42f)
+    val offsetX = (item.normalizedX.coerceIn(0.06f, 0.94f) * stageWidthPx - estWidthPx * 0.5f).roundToInt()
+    val offsetY = (item.normalizedY.coerceIn(0.06f, 0.94f) * stageHeightPx - estHeightPx * 0.5f).roundToInt()
 
     val bgColor = when (item.style) {
-        TextOverlayStyle.AMBER_PILL -> primaryColor.copy(alpha = 0.94f * item.opacity)
-        TextOverlayStyle.SUBTITLE -> Color(0xC80C0E13).copy(alpha = 0.85f * item.opacity)
-        TextOverlayStyle.GLASS -> Color(0x66FFFFFF).copy(alpha = 0.34f * item.opacity)
+        TextOverlayStyle.AMBER_PILL -> Color(0xFFF5A623).copy(alpha = item.opacity)
+        TextOverlayStyle.SUBTITLE -> Color(0xCC0B0D12).copy(alpha = 0.85f * item.opacity)
+        TextOverlayStyle.GLASS -> Color(0x66191D25).copy(alpha = 0.65f * item.opacity)
         TextOverlayStyle.MINIMAL, TextOverlayStyle.OUTLINE -> Color.Transparent
     }
     val textColor = when (item.style) {
@@ -886,7 +876,9 @@ private fun TextCaptionOverlayView(
     }
     val pillShape = when (item.style) {
         TextOverlayStyle.AMBER_PILL -> CircleShape
-        else -> RoundedCornerShape(10.dp)
+        TextOverlayStyle.SUBTITLE -> RoundedCornerShape(with(density) { (textPx * 0.22f).toDp() })
+        TextOverlayStyle.GLASS -> RoundedCornerShape(with(density) { (textPx * 0.35f).toDp() })
+        else -> RoundedCornerShape(8.dp)
     }
 
     Box(
@@ -921,16 +913,37 @@ private fun TextCaptionOverlayView(
                 .background(bgColor)
                 .then(
                     if (item.style == TextOverlayStyle.GLASS) {
-                        Modifier.border(1.dp, Color.White.copy(alpha = 0.45f * item.opacity), pillShape)
+                        Modifier.border(
+                            width = with(density) { max(2f, textPx * 0.06f).toDp() },
+                            color = Color(0x99FFFFFF).copy(alpha = 0.60f * item.opacity),
+                            shape = pillShape
+                        )
                     } else if (isSelected) {
                         Modifier.border(1.5.dp, primaryColor, pillShape)
                     } else {
                         Modifier
                     }
                 )
-                .padding(horizontal = 12.dp, vertical = 5.dp),
+                .padding(horizontal = padHDp, vertical = padVDp),
             contentAlignment = Alignment.Center
         ) {
+            if (item.style == TextOverlayStyle.OUTLINE) {
+                // Crisp black stroke behind text matching MaskRenderUtils.drawTextOverlays OUTLINE
+                Text(
+                    text = item.text,
+                    color = Color.Black.copy(alpha = item.opacity),
+                    fontSize = scaledSp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    textAlign = TextAlign.Center,
+                    style = MaterialTheme.typography.titleMedium.copy(
+                        drawStyle = Stroke(
+                            width = max(3f, textPx * 0.14f),
+                            join = StrokeJoin.Round
+                        )
+                    )
+                )
+            }
             Text(
                 text = item.text,
                 color = textColor,
@@ -939,11 +952,11 @@ private fun TextCaptionOverlayView(
                 maxLines = 1,
                 textAlign = TextAlign.Center,
                 style = MaterialTheme.typography.titleMedium.copy(
-                    shadow = if (item.style == TextOverlayStyle.OUTLINE || item.style == TextOverlayStyle.MINIMAL) {
+                    shadow = if (item.style == TextOverlayStyle.MINIMAL) {
                         Shadow(
-                            color = Color.Black.copy(alpha = 0.85f * item.opacity),
-                            offset = Offset(0f, 3f),
-                            blurRadius = if (item.style == TextOverlayStyle.OUTLINE) 4f else 8f
+                            color = Color.Black.copy(alpha = 0.78f * item.opacity),
+                            offset = Offset(0f, textPx * 0.06f),
+                            blurRadius = textPx * 0.18f
                         )
                     } else {
                         null
@@ -990,8 +1003,8 @@ private fun WatermarkOverlayItem(
     val primaryColor = MaterialTheme.colorScheme.primary
 
     val minDim = min(stageWidthPx, stageHeightPx)
-    val centerPxX = wm.normalizedX * stageWidthPx
-    val centerPxY = wm.normalizedY * stageHeightPx
+    val centerPxX = wm.normalizedX.coerceIn(0.04f, 0.96f) * stageWidthPx
+    val centerPxY = wm.normalizedY.coerceIn(0.04f, 0.96f) * stageHeightPx
 
     val dragModifier = Modifier.pointerInput(isEditable, stageWidthPx, stageHeightPx) {
         if (!isEditable) return@pointerInput
@@ -1008,10 +1021,12 @@ private fun WatermarkOverlayItem(
 
     when (wm.type) {
         WatermarkType.TEXT -> {
-            val scaledSp = with(density) { ((wm.fontSizeSp / 360f) * minDim * 0.92f).coerceAtLeast(12f).toSp() }
-            val estWidthPx = (wm.text.length.coerceAtLeast(4) * scaledSp.value * 0.72f * density.density)
-                .coerceIn(90f, stageWidthPx * 0.9f)
-            val estHeightPx = (scaledSp.value * 1.6f * density.density).coerceAtLeast(36f)
+            // Exact same font-size math as MaskRenderUtils.drawWatermark
+            val textPx = ((wm.fontSizeSp / 360f) * minDim * 1.05f).coerceAtLeast(16f)
+            val scaledSp = with(density) { textPx.toSp() }
+            val estWidthPx = (wm.text.length.coerceAtLeast(4) * textPx * 0.70f + 24f)
+                .coerceIn(90f, stageWidthPx * 0.94f)
+            val estHeightPx = (textPx * 1.65f).coerceAtLeast(36f)
             val offsetX = (centerPxX - estWidthPx * 0.5f).roundToInt()
             val offsetY = (centerPxY - estHeightPx * 0.5f).roundToInt()
 
@@ -1043,8 +1058,8 @@ private fun WatermarkOverlayItem(
                     style = MaterialTheme.typography.titleMedium.copy(
                         shadow = Shadow(
                             color = Color.Black.copy(alpha = 0.72f * wm.opacity),
-                            offset = Offset(0f, 3f),
-                            blurRadius = 6f
+                            offset = Offset(0f, textPx * 0.06f),
+                            blurRadius = textPx * 0.14f
                         )
                     )
                 )
@@ -1056,7 +1071,7 @@ private fun WatermarkOverlayItem(
                 uiState.watermarkLogoBitmap?.asImageBitmap()
             }
             if (logoBitmap != null) {
-                val targetW = stageWidthPx * wm.logoScale.coerceIn(0.08f, 0.48f)
+                val targetW = stageWidthPx * wm.logoScale.coerceIn(0.06f, 0.55f)
                 val aspect = logoBitmap.width.toFloat() / logoBitmap.height.coerceAtLeast(1)
                 val targetH = targetW / aspect
                 val offsetX = (centerPxX - targetW * 0.5f).roundToInt()

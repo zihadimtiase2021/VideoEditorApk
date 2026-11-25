@@ -41,21 +41,17 @@ import kotlin.math.sin
 object MaskRenderUtils {
 
     /**
-     * Full photo export pipeline:
+     * Shared base pipeline (Steps 1-3) used by BOTH live WYSIWYG Photo Preview and full-res Export:
      * 1. Apply privacy masks (per-face shaped & feathered across all 9 effects)
      * 2. Apply color grading & vignette
      * 3. Apply crop / aspect ratio / rotate / flip / zoom transform
-     * 4. Draw styled text captions & watermark
      */
-    fun renderImageEdits(
+    fun renderImagePreviewBase(
         sourceBitmap: Bitmap,
         resolvedMasks: List<ResolvedMaskInstance>,
         stickerBitmap: Bitmap?,
         colorGradeConfig: ColorGradeConfig,
-        transformConfig: TransformConfig,
-        textOverlays: List<TextOverlayItem>,
-        watermarkConfig: WatermarkConfig,
-        watermarkLogoBitmap: Bitmap?
+        transformConfig: TransformConfig
     ): Bitmap {
         var working = sourceBitmap.copy(Bitmap.Config.ARGB_8888, true)
 
@@ -75,6 +71,31 @@ object MaskRenderUtils {
             working.recycle()
             working = transformed
         }
+
+        return working
+    }
+
+    /**
+     * Full photo export pipeline:
+     * Runs [renderImagePreviewBase] and draws styled text captions & watermark on the final canvas.
+     */
+    fun renderImageEdits(
+        sourceBitmap: Bitmap,
+        resolvedMasks: List<ResolvedMaskInstance>,
+        stickerBitmap: Bitmap?,
+        colorGradeConfig: ColorGradeConfig,
+        transformConfig: TransformConfig,
+        textOverlays: List<TextOverlayItem>,
+        watermarkConfig: WatermarkConfig,
+        watermarkLogoBitmap: Bitmap?
+    ): Bitmap {
+        val working = renderImagePreviewBase(
+            sourceBitmap = sourceBitmap,
+            resolvedMasks = resolvedMasks,
+            stickerBitmap = stickerBitmap,
+            colorGradeConfig = colorGradeConfig,
+            transformConfig = transformConfig
+        )
 
         // 4. Draw Text Captions & Watermark on final framed canvas
         val canvas = Canvas(working)
@@ -262,7 +283,7 @@ object MaskRenderUtils {
             }
 
             MaskShape.CIRCLE -> {
-                val radius = max(w, h) * 0.5f
+                val radius = min(w, h) * 0.5f
                 path.addCircle(cx, cy, radius, Path.Direction.CW)
             }
 
@@ -330,7 +351,7 @@ object MaskRenderUtils {
             }
 
             MaskMode.EMOJI -> {
-                val textSize = min(rectF.width(), rectF.height()) * 0.92f
+                val textSize = min(rectF.width(), rectF.height()) * 0.84f
                 val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                     this.textSize = textSize
                     this.alpha = alphaInt
@@ -393,7 +414,7 @@ object MaskRenderUtils {
             val alphaInt = (item.opacity.coerceIn(0.1f, 1f) * 255f).roundToInt()
             val anchorX = item.normalizedX.coerceIn(0.06f, 0.94f) * canvasWidth
             val anchorY = item.normalizedY.coerceIn(0.06f, 0.94f) * canvasHeight
-            val textPx = ((item.fontSizeSp / 360f) * minDim * 1.10f).coerceAtLeast(18f)
+            val textPx = ((item.fontSizeSp / 360f) * minDim * 1.05f).coerceAtLeast(16f)
 
             val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 textSize = textPx
@@ -497,7 +518,7 @@ object MaskRenderUtils {
                 val text = watermarkConfig.text.trim()
                 if (text.isEmpty()) return
                 val minDim = min(canvasWidth, canvasHeight).toFloat()
-                val scaledTextPx = (watermarkConfig.fontSizeSp / 360f) * minDim * 1.15f
+                val scaledTextPx = ((watermarkConfig.fontSizeSp / 360f) * minDim * 1.05f).coerceAtLeast(16f)
                 val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                     color = watermarkConfig.textColorArgb
                     alpha = alphaInt

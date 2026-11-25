@@ -32,7 +32,7 @@ enum class MaskMode(val label: String, val shaderId: Int) {
     GLITCH("Glitch", 4),
     INVERT("Invert", 5),
     SPOTLIGHT("Spotlight", 6),
-    SOLID_COLOR("Solid", 0),
+    SOLID_COLOR("Solid", 7),
     EMOJI("Emoji", 0),
     STICKER("Sticker", 0);
 
@@ -347,7 +347,7 @@ data class FaceTrack(
     val isStaticImage: Boolean = false,
     val styleOverride: FaceStyleOverride? = null
 ) {
-    fun rectAt(timestampMs: Long, maxGapMs: Long = 850L): NormalizedRect? {
+    fun rectAt(timestampMs: Long, maxGapMs: Long = 520L): NormalizedRect? {
         if (keyframes.isEmpty()) return null
         if (isStaticImage || keyframes.size == 1) {
             val only = keyframes.first()

@@ -15,9 +15,11 @@ import com.example.model.MaskMode
 import com.example.model.ResolvedMaskInstance
 
 /**
- * Hardware-accelerated OpenGL ES 2.0 Media3 GlEffect supporting up to 12 simultaneous
- * per-face shaped & feathered privacy masks (Rounded, Oval, Circle, Heart, Star) across
- * Blur, Mosaic, Frosted Glass, Glitch, Invert, and Spotlight modes.
+ * Hardware-accelerated OpenGL ES 2.0 Media3 GlEffect shared identically by BOTH
+ * live ExoPlayer video preview and Media3 Transformer MP4 export.
+ * Supports up to 12 simultaneous per-face shaped & feathered privacy masks
+ * (Rounded, Oval, Circle, Heart, Star) across Blur, Mosaic, Frosted Glass,
+ * Glitch, Invert, Spotlight, and Solid Color modes.
  */
 @OptIn(UnstableApi::class)
 class PrivacyMaskGlEffect(
@@ -101,13 +103,23 @@ private class PrivacyMaskGlShaderProgram(
                             mask.opacity.coerceIn(0.25f, 1f)
                         )
                     )
-                    glProgram.setFloatsUniform(
-                        "uParam$i",
-                        floatArrayOf(
-                            mask.blurIntensity.coerceIn(0.15f, 1f),
-                            mask.pixelBlockSize.coerceIn(0.1f, 1f)
+                    if (mask.mode == MaskMode.SOLID_COLOR) {
+                        val argb = mask.solidColorArgb
+                        val cr = ((argb shr 16) and 0xFF) / 255f
+                        val cg = ((argb shr 8) and 0xFF) / 255f
+                        val cb = (argb and 0xFF) / 255f
+                        glProgram.setFloatsUniform("uParam$i", floatArrayOf(cr, cg, cb, 1f))
+                    } else {
+                        glProgram.setFloatsUniform(
+                            "uParam$i",
+                            floatArrayOf(
+                                mask.blurIntensity.coerceIn(0.15f, 1f),
+                                mask.pixelBlockSize.coerceIn(0.1f, 1f),
+                                0f,
+                                0f
+                            )
                         )
-                    )
+                    }
                 } else {
                     glProgram.setFloatsUniform("uBox$i", EMPTY_RECT)
                     glProgram.setFloatsUniform("uMeta$i", EMPTY_META)
@@ -135,7 +147,7 @@ private class PrivacyMaskGlShaderProgram(
         private const val MAX_BOXES = 12
         private val EMPTY_RECT = floatArrayOf(-1f, -1f, -1f, -1f)
         private val EMPTY_META = floatArrayOf(0f, 0f, 0f, 0f)
-        private val EMPTY_PARAM = floatArrayOf(0.7f, 0.5f)
+        private val EMPTY_PARAM = floatArrayOf(0.7f, 0.5f, 0f, 0f)
 
         private const val VERTEX_SHADER = """
             attribute vec4 aFramePosition;
@@ -159,18 +171,18 @@ private class PrivacyMaskGlShaderProgram(
             uniform int uHasSpotlight;
             uniform float uSpotlightBlur;
             uniform float uSpotlightOpacity;
-            uniform vec4 uBox0; uniform vec4 uMeta0; uniform vec2 uParam0;
-            uniform vec4 uBox1; uniform vec4 uMeta1; uniform vec2 uParam1;
-            uniform vec4 uBox2; uniform vec4 uMeta2; uniform vec2 uParam2;
-            uniform vec4 uBox3; uniform vec4 uMeta3; uniform vec2 uParam3;
-            uniform vec4 uBox4; uniform vec4 uMeta4; uniform vec2 uParam4;
-            uniform vec4 uBox5; uniform vec4 uMeta5; uniform vec2 uParam5;
-            uniform vec4 uBox6; uniform vec4 uMeta6; uniform vec2 uParam6;
-            uniform vec4 uBox7; uniform vec4 uMeta7; uniform vec2 uParam7;
-            uniform vec4 uBox8; uniform vec4 uMeta8; uniform vec2 uParam8;
-            uniform vec4 uBox9; uniform vec4 uMeta9; uniform vec2 uParam9;
-            uniform vec4 uBox10; uniform vec4 uMeta10; uniform vec2 uParam10;
-            uniform vec4 uBox11; uniform vec4 uMeta11; uniform vec2 uParam11;
+            uniform vec4 uBox0; uniform vec4 uMeta0; uniform vec4 uParam0;
+            uniform vec4 uBox1; uniform vec4 uMeta1; uniform vec4 uParam1;
+            uniform vec4 uBox2; uniform vec4 uMeta2; uniform vec4 uParam2;
+            uniform vec4 uBox3; uniform vec4 uMeta3; uniform vec4 uParam3;
+            uniform vec4 uBox4; uniform vec4 uMeta4; uniform vec4 uParam4;
+            uniform vec4 uBox5; uniform vec4 uMeta5; uniform vec4 uParam5;
+            uniform vec4 uBox6; uniform vec4 uMeta6; uniform vec4 uParam6;
+            uniform vec4 uBox7; uniform vec4 uMeta7; uniform vec4 uParam7;
+            uniform vec4 uBox8; uniform vec4 uMeta8; uniform vec4 uParam8;
+            uniform vec4 uBox9; uniform vec4 uMeta9; uniform vec4 uParam9;
+            uniform vec4 uBox10; uniform vec4 uMeta10; uniform vec4 uParam10;
+            uniform vec4 uBox11; uniform vec4 uMeta11; uniform vec4 uParam11;
             varying vec2 vTexSamplingCoord;
 
             // Signed distance in normalized [-1..1] box coordinates (negative inside, positive outside)
@@ -184,10 +196,10 @@ private class PrivacyMaskGlShaderProgram(
                     // Oval
                     return length(p) - 1.0;
                 } else if (shapeId == 2) {
-                    // True Circle (aspect corrected)
+                    // Inscribed True Circle (matches MaskRenderUtils & Compose Shape identically)
                     vec2 diffPx = (tdUv - center) * uResolution;
                     vec2 halfPx = halfSize * uResolution;
-                    float rad = max(halfPx.x, halfPx.y);
+                    float rad = min(halfPx.x, halfPx.y);
                     return (length(diffPx) / max(rad, 1.0)) - 1.0;
                 } else if (shapeId == 3) {
                     // Heart curve (top-down y inverted so heart points down)
@@ -243,7 +255,7 @@ private class PrivacyMaskGlShaderProgram(
                 return sum / weightSum;
             }
 
-            vec4 computeEffectColor(vec2 uv, int modeId, vec2 param) {
+            vec4 computeEffectColor(vec2 uv, int modeId, vec4 param) {
                 if (modeId == 2) {
                     // Mosaic / Pixelate
                     float minDim = min(uResolution.x, uResolution.y);
@@ -275,6 +287,9 @@ private class PrivacyMaskGlShaderProgram(
                     // Invert
                     vec4 baseC = texture2D(uTexSampler, uv);
                     return vec4(vec3(1.0) - baseC.rgb, baseC.a);
+                } else if (modeId == 7) {
+                    // Solid Color Fill (uses uParam.rgb)
+                    return vec4(param.rgb, 1.0);
                 }
                 // Default 1: Gaussian Blur
                 return sampleGaussianBlur(uv, param.x);
@@ -284,10 +299,10 @@ private class PrivacyMaskGlShaderProgram(
                 vec2 tdUv,
                 vec4 b,
                 vec4 meta,
-                vec2 param,
+                vec4 param,
                 inout float bestAlpha,
                 inout int bestMode,
-                inout vec2 bestParam,
+                inout vec4 bestParam,
                 inout float spotlightKeep
             ) {
                 int m = int(meta.x + 0.5);
@@ -314,7 +329,7 @@ private class PrivacyMaskGlShaderProgram(
 
                 float bestAlpha = 0.0;
                 int bestMode = 0;
-                vec2 bestParam = vec2(0.7, 0.5);
+                vec4 bestParam = vec4(0.7, 0.5, 0.0, 0.0);
                 float spotlightKeep = 0.0;
 
                 if (uBoxCount > 0) evalBox(tdUv, uBox0, uMeta0, uParam0, bestAlpha, bestMode, bestParam, spotlightKeep);

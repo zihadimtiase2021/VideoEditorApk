@@ -181,8 +181,9 @@ class MediaExportEngine(
         // 4. Transform: Rotate, Flip, Zoom & Social Aspect Ratio Crop
         addTransformEffects(videoEffects, asset.width, asset.height, state.transformConfig)
 
-        // 5. Output Resolution Scaling
-        if (targetHeight != null && asset.height > targetHeight) {
+        // 5. Output Resolution Scaling (respecting rotated dimensions)
+        val postRotHeight = if ((state.transformConfig.rotationDegrees % 180) != 0) asset.width else asset.height
+        if (targetHeight != null && postRotHeight > targetHeight) {
             videoEffects.add(Presentation.createForHeight(targetHeight))
         }
 

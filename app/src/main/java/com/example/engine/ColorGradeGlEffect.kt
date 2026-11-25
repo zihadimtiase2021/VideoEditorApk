@@ -14,24 +14,30 @@ import androidx.media3.effect.GlShaderProgram
 import com.example.model.ColorGradeConfig
 
 /**
- * Hardware-accelerated OpenGL ES 2.0 Color Grading & Vignette GlEffect for Media3 Transformer.
+ * Hardware-accelerated OpenGL ES 2.0 Color Grading & Vignette GlEffect shared identically
+ * by BOTH live ExoPlayer video preview (via dynamic [configProvider]) and Media3 Transformer export.
  */
 @OptIn(UnstableApi::class)
 class ColorGradeGlEffect(
-    private val config: ColorGradeConfig
+    private val configProvider: () -> ColorGradeConfig,
+    private val alwaysActive: Boolean = false
 ) : GlEffect {
 
+    constructor(config: ColorGradeConfig) : this({ config }, alwaysActive = false)
+
     override fun toGlShaderProgram(context: Context, useHdr: Boolean): GlShaderProgram {
-        return ColorGradeGlShaderProgram(useHdr = useHdr, config = config)
+        return ColorGradeGlShaderProgram(useHdr = useHdr, configProvider = configProvider)
     }
 
-    override fun isNoOp(inputWidth: Int, inputHeight: Int): Boolean = config.isDefault()
+    override fun isNoOp(inputWidth: Int, inputHeight: Int): Boolean {
+        return if (alwaysActive) false else configProvider().isDefault()
+    }
 }
 
 @OptIn(UnstableApi::class)
 private class ColorGradeGlShaderProgram(
     useHdr: Boolean,
-    private val config: ColorGradeConfig
+    private val configProvider: () -> ColorGradeConfig
 ) : BaseGlShaderProgram(useHdr, /* texturePoolCapacity= */ 1) {
 
     private val glProgram: GlProgram
@@ -57,6 +63,7 @@ private class ColorGradeGlShaderProgram(
 
     override fun drawFrame(inputTexId: Int, presentationTimeUs: Long) {
         try {
+            val config = configProvider()
             glProgram.use()
             glProgram.setSamplerTexIdUniform("uTexSampler", inputTexId, 0)
             glProgram.setFloatUniform("uBrightness", config.brightness.coerceIn(-0.4f, 0.4f))

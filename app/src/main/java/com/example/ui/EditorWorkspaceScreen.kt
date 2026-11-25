@@ -71,13 +71,18 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.annotation.OptIn
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import com.example.R
+import com.example.engine.ColorGradeGlEffect
+import com.example.engine.PrivacyMaskGlEffect
 import com.example.model.AspectRatioPreset
 import com.example.model.ColorFilterPreset
+import com.example.model.ColorGradeConfig
 import com.example.model.EditorTab
 import com.example.model.EditorUiState
 import com.example.model.MaskMode
@@ -99,8 +104,10 @@ import com.example.ui.components.TrimCutPanel
 import com.example.ui.components.WatermarkPanel
 import com.example.ui.theme.TimecodeTextStyle
 import kotlinx.coroutines.delay
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.roundToLong
 
+@OptIn(UnstableApi::class)
 @Composable
 fun EditorWorkspaceScreen(
     uiState: EditorUiState,
@@ -201,15 +208,55 @@ fun EditorWorkspaceScreen(
     val asset = uiState.mediaAsset ?: return
     val isVideo = asset.type == MediaType.VIDEO
 
+    // Thread-safe live state snapshot read directly by GPU OpenGL shaders on ExoPlayer's render thread
+    val liveStateRef = remember { AtomicReference(uiState) }
+    liveStateRef.set(uiState)
+
     val exoPlayer = remember(asset.uri, isVideo) {
         if (isVideo) {
+            val liveMaskEffect = PrivacyMaskGlEffect(
+                activeMasksProvider = { ptsUs ->
+                    val state = liveStateRef.get()
+                    if (state.isComparingOriginal) {
+                        emptyList()
+                    } else {
+                        state.resolvedMasksAt(ptsUs / 1000L)
+                    }
+                }
+            )
+            val liveColorEffect = ColorGradeGlEffect(
+                configProvider = {
+                    val state = liveStateRef.get()
+                    if (state.isComparingOriginal) ColorGradeConfig() else state.colorGradeConfig
+                },
+                alwaysActive = true
+            )
             ExoPlayer.Builder(context).build().apply {
                 setMediaItem(MediaItem.fromUri(asset.uri))
+                setVideoEffects(listOf(liveMaskEffect, liveColorEffect))
                 repeatMode = Player.REPEAT_MODE_ONE
                 prepare()
             }
         } else {
             null
+        }
+    }
+
+    // Re-render current video frame through live GPU shaders immediately when editing while paused
+    LaunchedEffect(
+        exoPlayer,
+        uiState.isComparingOriginal,
+        uiState.faceTracks,
+        uiState.manualBoxes,
+        uiState.maskConfig,
+        uiState.colorGradeConfig
+    ) {
+        val player = exoPlayer ?: return@LaunchedEffect
+        if (!player.isPlaying && player.playbackState == Player.STATE_READY) {
+            delay(35L)
+            if (!player.isPlaying) {
+                player.seekTo(player.currentPosition)
+            }
         }
     }
 
