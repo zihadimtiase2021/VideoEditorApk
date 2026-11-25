@@ -4,8 +4,10 @@ import android.graphics.Bitmap
 import android.net.Uri
 import androidx.compose.ui.graphics.Color
 import java.util.UUID
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToLong
 
 enum class MediaType {
     IMAGE,
@@ -14,22 +16,191 @@ enum class MediaType {
 
 enum class EditorTab {
     FACE_MASK,
+    ADJUST,
+    TRANSFORM,
+    SPEED,
+    AUDIO,
+    TEXT,
     WATERMARK,
     TRIM_CUT
 }
 
-enum class MaskMode(val label: String) {
-    GAUSSIAN_BLUR("Blur"),
-    PIXELATE("Mosaic"),
-    SOLID_COLOR("Solid"),
-    EMOJI("Emoji"),
-    STICKER("Sticker")
+enum class MaskMode(val label: String, val shaderId: Int) {
+    GAUSSIAN_BLUR("Blur", 1),
+    PIXELATE("Mosaic", 2),
+    FROSTED_GLASS("Frosted", 3),
+    GLITCH("Glitch", 4),
+    INVERT("Invert", 5),
+    SPOTLIGHT("Spotlight", 6),
+    SOLID_COLOR("Solid", 0),
+    EMOJI("Emoji", 0),
+    STICKER("Sticker", 0);
+
+    val isShaderEffect: Boolean
+        get() = shaderId > 0
+}
+
+enum class MaskShape(val label: String, val shaderId: Int) {
+    ROUNDED("Rounded", 0),
+    OVAL("Oval", 1),
+    CIRCLE("Circle", 2),
+    HEART("Heart", 3),
+    STAR("Star", 4)
 }
 
 enum class ScanAccuracy(val label: String, val fps: Int, val description: String) {
     FAST("Fast", 2, "2 fps • Quick"),
     BALANCED("Balanced", 5, "5 fps • Smooth"),
     HIGH("High", 10, "10 fps • Precise")
+}
+
+enum class ColorFilterPreset(
+    val label: String,
+    val brightness: Float = 0f,
+    val contrast: Float = 1f,
+    val saturation: Float = 1f,
+    val warmth: Float = 0f,
+    val vignette: Float = 0f
+) {
+    ORIGINAL("Original", 0f, 1.0f, 1.0f, 0f, 0f),
+    NOIR("Noir", -0.02f, 1.24f, 0.0f, 0f, 0.25f),
+    WARM_CINEMA("Cinema", -0.01f, 1.12f, 1.08f, 0.22f, 0.28f),
+    COOL_SLATE("Slate", 0.0f, 1.08f, 0.88f, -0.22f, 0.14f),
+    VIVID("Vivid", 0.03f, 1.15f, 1.38f, 0.06f, 0.08f),
+    MATTE("Matte", 0.05f, 0.88f, 0.86f, 0.08f, 0.18f),
+    VINTAGE("Vintage", 0.02f, 0.96f, 0.72f, 0.30f, 0.36f)
+}
+
+data class ColorGradeConfig(
+    val preset: ColorFilterPreset = ColorFilterPreset.ORIGINAL,
+    val brightness: Float = 0f,      // -0.4f..0.4f
+    val contrast: Float = 1.0f,      // 0.5f..1.6f
+    val saturation: Float = 1.0f,    // 0.0f..2.0f
+    val warmth: Float = 0f,          // -0.5f..0.5f
+    val vignette: Float = 0f         // 0.0f..0.85f
+) {
+    fun isDefault(): Boolean {
+        return abs(brightness) < 0.005f &&
+            abs(contrast - 1f) < 0.005f &&
+            abs(saturation - 1f) < 0.005f &&
+            abs(warmth) < 0.005f &&
+            vignette < 0.005f
+    }
+
+    /**
+     * Builds a standard 4x5 Android/Compose ColorMatrix float array (20 floats) matching
+     * both Compose preview and GPU/CPU exports.
+     */
+    fun toColorMatrix20(): FloatArray {
+        val c = contrast.coerceIn(0.5f, 1.6f)
+        val s = saturation.coerceIn(0f, 2.0f)
+        val b = brightness.coerceIn(-0.4f, 0.4f)
+        val w = warmth.coerceIn(-0.5f, 0.5f)
+
+        val lumR = 0.2126f
+        val lumG = 0.7152f
+        val lumB = 0.0722f
+        val sr = (1f - s) * lumR
+        val sg = (1f - s) * lumG
+        val sb = (1f - s) * lumB
+
+        val rGain = (1f + w * 0.22f).coerceIn(0.7f, 1.3f)
+        val gGain = (1f + w * 0.04f).coerceIn(0.85f, 1.15f)
+        val bGain = (1f - w * 0.24f).coerceIn(0.7f, 1.3f)
+
+        val offset = (0.5f * (1f - c) + b) * 255f
+
+        return floatArrayOf(
+            (sr + s) * c * rGain, sg * c * rGain, sb * c * rGain, 0f, offset,
+            sr * c * gGain, (sg + s) * c * gGain, sb * c * gGain, 0f, offset,
+            sr * c * bGain, sg * c * bGain, (sb + s) * c * bGain, 0f, offset,
+            0f, 0f, 0f, 1f, 0f
+        )
+    }
+}
+
+enum class AspectRatioPreset(val label: String, val ratio: Float?) {
+    ORIGINAL("Original", null),
+    RATIO_9_16("9:16", 9f / 16f),
+    RATIO_16_9("16:9", 16f / 9f),
+    RATIO_1_1("1:1", 1f),
+    RATIO_4_5("4:5", 4f / 5f),
+    RATIO_4_3("4:3", 4f / 3f)
+}
+
+data class TransformConfig(
+    val aspectRatio: AspectRatioPreset = AspectRatioPreset.ORIGINAL,
+    val rotationDegrees: Int = 0, // 0, 90, 180, 270
+    val flipHorizontal: Boolean = false,
+    val flipVertical: Boolean = false,
+    val zoomScale: Float = 1.0f   // 1.0f..2.0f
+) {
+    fun isDefault(): Boolean {
+        return aspectRatio == AspectRatioPreset.ORIGINAL &&
+            (rotationDegrees % 360) == 0 &&
+            !flipHorizontal &&
+            !flipVertical &&
+            abs(zoomScale - 1.0f) < 0.005f
+    }
+
+    fun effectiveAspectRatio(sourceWidth: Int, sourceHeight: Int): Float {
+        aspectRatio.ratio?.let { return it }
+        val rotated = (rotationDegrees % 180) != 0
+        val w = if (rotated) sourceHeight else sourceWidth
+        val h = if (rotated) sourceWidth else sourceHeight
+        return if (w > 0 && h > 0) w.toFloat() / h.toFloat() else 16f / 9f
+    }
+}
+
+data class SpeedConfig(
+    val speedMultiplier: Float = 1.0f, // 0.25f..4.0f
+    val preservePitch: Boolean = true
+) {
+    fun isDefault(): Boolean = abs(speedMultiplier - 1.0f) < 0.01f
+
+    fun outputDurationMs(sourceDurationMs: Long): Long {
+        if (sourceDurationMs <= 0L) return 0L
+        return (sourceDurationMs / speedMultiplier.coerceIn(0.25f, 4.0f)).roundToLong().coerceAtLeast(100L)
+    }
+}
+
+data class AudioConfig(
+    val originalVolume: Float = 1.0f, // 0f..1f
+    val isMuted: Boolean = false,
+    val musicUri: Uri? = null,
+    val musicDisplayName: String? = null,
+    val musicVolume: Float = 0.65f,   // 0f..1f
+    val loopMusic: Boolean = true
+) {
+    val effectiveOriginalVolume: Float
+        get() = if (isMuted) 0f else originalVolume.coerceIn(0f, 1f)
+}
+
+enum class TextOverlayStyle(val label: String) {
+    MINIMAL("Minimal"),
+    AMBER_PILL("Amber Pill"),
+    SUBTITLE("Subtitle"),
+    OUTLINE("Outline"),
+    GLASS("Glass")
+}
+
+data class TextOverlayItem(
+    val id: String = UUID.randomUUID().toString(),
+    val text: String = "MaskFrame Studio",
+    val style: TextOverlayStyle = TextOverlayStyle.AMBER_PILL,
+    val fontSizeSp: Float = 26f,
+    val textColorArgb: Int = 0xFFFFFFFF.toInt(),
+    val opacity: Float = 1.0f,
+    val normalizedX: Float = 0.50f,
+    val normalizedY: Float = 0.78f,
+    val startMs: Long = 0L,
+    val endMs: Long = Long.MAX_VALUE
+) {
+    fun isVisibleAt(timestampMs: Long, isVideo: Boolean): Boolean {
+        if (text.isBlank()) return false
+        if (!isVideo) return true
+        return timestampMs in startMs..endMs
+    }
 }
 
 enum class WatermarkType(val label: String) {
@@ -148,18 +319,39 @@ data class FaceKeyframe(
     val rect: NormalizedRect
 )
 
+/**
+ * Optional per-face customization that overrides the global [FaceMaskConfig] for a single person.
+ */
+data class FaceStyleOverride(
+    val mode: MaskMode? = null,
+    val shape: MaskShape? = null,
+    val sizeScale: Float? = null,
+    val blurIntensity: Float? = null,
+    val pixelBlockSize: Float? = null,
+    val feather: Float? = null,
+    val opacity: Float? = null,
+    val solidColorArgb: Int? = null,
+    val selectedEmoji: String? = null
+) {
+    fun hasAnyOverride(): Boolean =
+        mode != null || shape != null || sizeScale != null || blurIntensity != null ||
+            pixelBlockSize != null || feather != null || opacity != null ||
+            solidColorArgb != null || selectedEmoji != null
+}
+
 data class FaceTrack(
     val id: Int,
     val label: String,
     val keyframes: List<FaceKeyframe>,
     val isSelected: Boolean = true,
-    val isStaticImage: Boolean = false
+    val isStaticImage: Boolean = false,
+    val styleOverride: FaceStyleOverride? = null
 ) {
     fun rectAt(timestampMs: Long, maxGapMs: Long = 850L): NormalizedRect? {
         if (keyframes.isEmpty()) return null
         if (isStaticImage || keyframes.size == 1) {
             val only = keyframes.first()
-            return if (isStaticImage || kotlin.math.abs(timestampMs - only.timestampMs) <= maxGapMs) {
+            return if (isStaticImage || abs(timestampMs - only.timestampMs) <= maxGapMs) {
                 only.rect
             } else {
                 null
@@ -209,6 +401,10 @@ data class ManualMaskBox(
 
 data class FaceMaskConfig(
     val mode: MaskMode = MaskMode.GAUSSIAN_BLUR,
+    val shape: MaskShape = MaskShape.OVAL,
+    val sizeScale: Float = 1.0f,       // 0.75f..1.80f
+    val feather: Float = 0.28f,        // 0.0f..1.0f
+    val opacity: Float = 1.0f,         // 0.25f..1.0f
     val blurIntensity: Float = 0.72f,
     val pixelBlockSize: Float = 0.55f,
     val solidColorArgb: Int = 0xFF0E1014.toInt(),
@@ -216,6 +412,22 @@ data class FaceMaskConfig(
     val stickerUri: Uri? = null,
     val stickerScale: Float = 1.2f,
     val applyToAllFaces: Boolean = true
+)
+
+/**
+ * Fully resolved mask instance merging global [FaceMaskConfig] with an optional [FaceStyleOverride].
+ */
+data class ResolvedMaskInstance(
+    val rect: NormalizedRect,
+    val mode: MaskMode,
+    val shape: MaskShape,
+    val blurIntensity: Float,
+    val pixelBlockSize: Float,
+    val feather: Float,
+    val opacity: Float,
+    val solidColorArgb: Int,
+    val selectedEmoji: String,
+    val stickerScale: Float
 )
 
 data class WatermarkConfig(
@@ -290,10 +502,11 @@ data class TrimCutConfig(
     val outputDurationMs: Long
         get() = keptRanges().sumOf { (it.last - it.first).coerceAtLeast(0L) }
 
-    fun outputTimeMsToSourceTimeMs(outputMs: Long): Long {
+    fun outputTimeMsToSourceTimeMs(outputMs: Long, speedMultiplier: Float = 1.0f): Long {
+        val scaledOutputMs = (outputMs.coerceAtLeast(0L) * speedMultiplier.coerceIn(0.25f, 4.0f)).roundToLong()
         val ranges = keptRanges()
-        if (ranges.isEmpty()) return outputMs
-        var remaining = outputMs.coerceAtLeast(0L)
+        if (ranges.isEmpty()) return scaledOutputMs
+        var remaining = scaledOutputMs
         for (range in ranges) {
             val len = (range.last - range.first).coerceAtLeast(0L)
             if (remaining <= len) {
@@ -320,7 +533,7 @@ sealed interface FaceScanState {
 sealed interface ExportState {
     data object Idle : ExportState
     data object Configuring : ExportState
-    data class Processing(val progress: Float, val stage: String) : ExportState
+    data class Processing(val progress: Float, val stage: String, val runningInBackground: Boolean = false) : ExportState
     data class Success(
         val outputUri: Uri,
         val displayName: String,
@@ -361,7 +574,8 @@ sealed interface BatchExportState {
         val currentIndex: Int,
         val itemProgress: Float,
         val overallProgress: Float,
-        val stage: String
+        val stage: String,
+        val runningInBackground: Boolean = false
     ) : BatchExportState
     data class Completed(
         val items: List<BatchQueueItem>,
@@ -374,6 +588,11 @@ data class EditSnapshot(
     val faceTracks: List<FaceTrack>,
     val manualBoxes: List<ManualMaskBox>,
     val maskConfig: FaceMaskConfig,
+    val colorGradeConfig: ColorGradeConfig,
+    val transformConfig: TransformConfig,
+    val speedConfig: SpeedConfig,
+    val audioConfig: AudioConfig,
+    val textOverlays: List<TextOverlayItem>,
     val watermarkConfig: WatermarkConfig,
     val trimCutConfig: TrimCutConfig
 )
@@ -385,10 +604,17 @@ data class EditorUiState(
     val scanAccuracy: ScanAccuracy = ScanAccuracy.BALANCED,
     val faceScanState: FaceScanState = FaceScanState.Idle,
     val faceTracks: List<FaceTrack> = emptyList(),
+    val selectedFaceTrackId: Int? = null,
     val manualBoxes: List<ManualMaskBox> = emptyList(),
     val selectedManualBoxId: String? = null,
     val maskConfig: FaceMaskConfig = FaceMaskConfig(),
     val stickerBitmap: Bitmap? = null,
+    val colorGradeConfig: ColorGradeConfig = ColorGradeConfig(),
+    val transformConfig: TransformConfig = TransformConfig(),
+    val speedConfig: SpeedConfig = SpeedConfig(),
+    val audioConfig: AudioConfig = AudioConfig(),
+    val textOverlays: List<TextOverlayItem> = emptyList(),
+    val selectedTextOverlayId: String? = null,
     val watermarkConfig: WatermarkConfig = WatermarkConfig(),
     val watermarkLogoBitmap: Bitmap? = null,
     val trimCutConfig: TrimCutConfig = TrimCutConfig(),
@@ -396,7 +622,6 @@ data class EditorUiState(
     val isLoadingFilmstrip: Boolean = false,
     val currentPlaybackMs: Long = 0L,
     val isPlaying: Boolean = false,
-    val isMuted: Boolean = false,
     val isComparingOriginal: Boolean = false,
     val canUndo: Boolean = false,
     val canRedo: Boolean = false,
@@ -406,19 +631,64 @@ data class EditorUiState(
     val imageExportFormat: ImageExportFormat = ImageExportFormat.JPG_HIGH,
     val exportState: ExportState = ExportState.Idle,
     val batchExportState: BatchExportState = BatchExportState.Idle,
+    val isExportSheetMinimized: Boolean = false,
+    val isBatchSheetMinimized: Boolean = false,
     val snackbarMessage: String? = null
 ) {
-    fun activeMaskRectsAt(timestampMs: Long): List<NormalizedRect> {
-        val rects = mutableListOf<NormalizedRect>()
+    val isMuted: Boolean get() = audioConfig.isMuted
+
+    fun resolveTrackMask(track: FaceTrack, baseRect: NormalizedRect): ResolvedMaskInstance {
+        val ov = track.styleOverride
+        val scale = (ov?.sizeScale ?: maskConfig.sizeScale).coerceIn(0.75f, 1.80f)
+        val scaledRect = if (abs(scale - 1.0f) > 0.01f) baseRect.expanded(scale).clamped() else baseRect
+        return ResolvedMaskInstance(
+            rect = scaledRect,
+            mode = ov?.mode ?: maskConfig.mode,
+            shape = ov?.shape ?: maskConfig.shape,
+            blurIntensity = ov?.blurIntensity ?: maskConfig.blurIntensity,
+            pixelBlockSize = ov?.pixelBlockSize ?: maskConfig.pixelBlockSize,
+            feather = ov?.feather ?: maskConfig.feather,
+            opacity = ov?.opacity ?: maskConfig.opacity,
+            solidColorArgb = ov?.solidColorArgb ?: maskConfig.solidColorArgb,
+            selectedEmoji = ov?.selectedEmoji ?: maskConfig.selectedEmoji,
+            stickerScale = maskConfig.stickerScale
+        )
+    }
+
+    fun resolvedMasksAt(timestampMs: Long): List<ResolvedMaskInstance> {
+        val result = mutableListOf<ResolvedMaskInstance>()
         for (track in faceTracks) {
             if (maskConfig.applyToAllFaces || track.isSelected) {
-                track.rectAt(timestampMs)?.let { rects.add(it) }
+                track.rectAt(timestampMs)?.let { baseRect ->
+                    result.add(resolveTrackMask(track, baseRect))
+                }
             }
         }
         for (manual in manualBoxes) {
-            rects.add(manual.rect)
+            result.add(
+                ResolvedMaskInstance(
+                    rect = manual.rect,
+                    mode = maskConfig.mode,
+                    shape = maskConfig.shape,
+                    blurIntensity = maskConfig.blurIntensity,
+                    pixelBlockSize = maskConfig.pixelBlockSize,
+                    feather = maskConfig.feather,
+                    opacity = maskConfig.opacity,
+                    solidColorArgb = maskConfig.solidColorArgb,
+                    selectedEmoji = maskConfig.selectedEmoji,
+                    stickerScale = maskConfig.stickerScale
+                )
+            )
         }
-        return rects
+        return result
+    }
+
+    fun activeMaskRectsAt(timestampMs: Long): List<NormalizedRect> =
+        resolvedMasksAt(timestampMs).map { it.rect }
+
+    fun effectiveVideoOutputDurationMs(): Long {
+        val baseTrimmed = trimCutConfig.outputDurationMs
+        return speedConfig.outputDurationMs(baseTrimmed)
     }
 }
 
@@ -456,6 +726,8 @@ object StudioPalettes {
         "\uD83D\uDC7B", // 👻
         "\uD83D\uDC31"  // 🐱
     )
+
+    val speedPresets: List<Float> = listOf(0.25f, 0.5f, 0.75f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f)
 }
 
 fun formatTimecode(ms: Long): String {

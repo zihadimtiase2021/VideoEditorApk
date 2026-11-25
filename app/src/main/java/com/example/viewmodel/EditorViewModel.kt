@@ -3,14 +3,17 @@ package com.example.viewmodel
 import android.app.Application
 import android.content.Context
 import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.engine.FaceDetectionEngine
-import com.example.engine.MediaExportEngine
 import com.example.engine.MediaMetadataLoader
+import com.example.model.AspectRatioPreset
+import com.example.model.AudioConfig
 import com.example.model.BatchExportState
-import com.example.model.BatchItemStatus
 import com.example.model.BatchQueueItem
+import com.example.model.ColorFilterPreset
+import com.example.model.ColorGradeConfig
 import com.example.model.CutSegment
 import com.example.model.EditSnapshot
 import com.example.model.EditorTab
@@ -18,20 +21,28 @@ import com.example.model.EditorUiState
 import com.example.model.ExportState
 import com.example.model.FaceMaskConfig
 import com.example.model.FaceScanState
+import com.example.model.FaceStyleOverride
 import com.example.model.ImageExportFormat
 import com.example.model.ManualMaskBox
 import com.example.model.MaskMode
+import com.example.model.MaskShape
 import com.example.model.MediaType
 import com.example.model.NormalizedRect
 import com.example.model.ScanAccuracy
+import com.example.model.SpeedConfig
+import com.example.model.TextOverlayItem
+import com.example.model.TextOverlayStyle
+import com.example.model.TransformConfig
 import com.example.model.TrimCutConfig
 import com.example.model.VideoExportQuality
 import com.example.model.WatermarkConfig
 import com.example.model.WatermarkPositionPreset
 import com.example.model.WatermarkType
+import com.example.service.ActiveBackgroundJob
+import com.example.service.BackgroundExportCoordinator
+import com.example.service.PendingExportJob
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -40,17 +51,21 @@ import kotlinx.coroutines.launch
 
 class EditorViewModel(application: Application) : AndroidViewModel(application) {
 
+    private val appContext = application.applicationContext
     private val prefs = application.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     private val metadataLoader = MediaMetadataLoader(application)
     private val faceDetectionEngine = FaceDetectionEngine(application, metadataLoader)
-    private val exportEngine = MediaExportEngine(application, metadataLoader)
 
     private val _uiState = MutableStateFlow(
         EditorUiState(
-            autoDetectAndBlurOnImport = prefs.getBoolean(KEY_AUTO_DETECT_BLUR_ON_IMPORT, true)
+            autoDetectAndBlurOnImport = prefs.getBoolean(KEY_AUTO_DETECT_BLUR_ON_IMPORT, true),
+            exportState = BackgroundExportCoordinator.exportState.value,
+            batchExportState = BackgroundExportCoordinator.batchExportState.value
         )
     )
     val uiState: StateFlow<EditorUiState> = _uiState.asStateFlow()
+
+    val activeBackgroundJob: StateFlow<ActiveBackgroundJob?> = BackgroundExportCoordinator.activeJob
 
     private val undoStack = ArrayDeque<EditSnapshot>()
     private val redoStack = ArrayDeque<EditSnapshot>()
@@ -59,13 +74,55 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
 
     private var faceScanJob: Job? = null
     private var filmstripJob: Job? = null
-    private var exportJob: Job? = null
-    private var batchExportJob: Job? = null
+
+    init {
+        viewModelScope.launch {
+            BackgroundExportCoordinator.exportState.collect { exportState ->
+                _uiState.update { state ->
+                    val resetMinimized = exportState is ExportState.Idle || exportState is ExportState.Configuring
+                    state.copy(
+                        exportState = exportState,
+                        isExportSheetMinimized = if (resetMinimized) false else state.isExportSheetMinimized,
+                        snackbarMessage = if (exportState is ExportState.Success && state.isExportSheetMinimized) {
+                            "Saved ${exportState.displayName} to gallery"
+                        } else {
+                            state.snackbarMessage
+                        }
+                    )
+                }
+            }
+        }
+        viewModelScope.launch {
+            BackgroundExportCoordinator.batchExportState.collect { batchState ->
+                _uiState.update { state ->
+                    val resetMinimized = batchState is BatchExportState.Idle || batchState is BatchExportState.Configuring
+                    state.copy(
+                        batchExportState = batchState,
+                        isBatchSheetMinimized = if (resetMinimized) false else state.isBatchSheetMinimized,
+                        snackbarMessage = if (batchState is BatchExportState.Completed && state.isBatchSheetMinimized) {
+                            "Batch complete: ${batchState.savedUris.size} of ${batchState.items.size} saved"
+                        } else {
+                            state.snackbarMessage
+                        }
+                    )
+                }
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Coalesced 40-Step Undo / Redo History
+    // -------------------------------------------------------------------------
 
     private fun captureSnapshot(state: EditorUiState): EditSnapshot = EditSnapshot(
         faceTracks = state.faceTracks,
         manualBoxes = state.manualBoxes,
         maskConfig = state.maskConfig,
+        colorGradeConfig = state.colorGradeConfig,
+        transformConfig = state.transformConfig,
+        speedConfig = state.speedConfig,
+        audioConfig = state.audioConfig,
+        textOverlays = state.textOverlays,
         watermarkConfig = state.watermarkConfig,
         trimCutConfig = state.trimCutConfig
     )
@@ -106,10 +163,6 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.update { state -> transform(state).withHistoryFlags() }
     }
 
-    /**
-     * Begins a coalesced continuous gesture/slider edit so dragging a slider or overlay
-     * records exactly ONE clean Undo step rather than flooding history.
-     */
     fun beginContinuousEdit() {
         if (!continuousEditActive && _uiState.value.mediaAsset != null) {
             continuousEditActive = true
@@ -127,14 +180,19 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         continuousEditActive = false
         val current = _uiState.value
         redoStack.addLast(captureSnapshot(current))
-        val previous = undoStack.removeLast()
+        val prev = undoStack.removeLast()
         _uiState.update { state ->
             state.copy(
-                faceTracks = previous.faceTracks,
-                manualBoxes = previous.manualBoxes,
-                maskConfig = previous.maskConfig,
-                watermarkConfig = previous.watermarkConfig,
-                trimCutConfig = previous.trimCutConfig,
+                faceTracks = prev.faceTracks,
+                manualBoxes = prev.manualBoxes,
+                maskConfig = prev.maskConfig,
+                colorGradeConfig = prev.colorGradeConfig,
+                transformConfig = prev.transformConfig,
+                speedConfig = prev.speedConfig,
+                audioConfig = prev.audioConfig,
+                textOverlays = prev.textOverlays,
+                watermarkConfig = prev.watermarkConfig,
+                trimCutConfig = prev.trimCutConfig,
                 selectedManualBoxId = null
             ).withHistoryFlags()
         }
@@ -151,6 +209,11 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 faceTracks = next.faceTracks,
                 manualBoxes = next.manualBoxes,
                 maskConfig = next.maskConfig,
+                colorGradeConfig = next.colorGradeConfig,
+                transformConfig = next.transformConfig,
+                speedConfig = next.speedConfig,
+                audioConfig = next.audioConfig,
+                textOverlays = next.textOverlays,
                 watermarkConfig = next.watermarkConfig,
                 trimCutConfig = next.trimCutConfig,
                 selectedManualBoxId = null
@@ -158,10 +221,13 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    // -------------------------------------------------------------------------
+    // Media Loading & Lifecycle
+    // -------------------------------------------------------------------------
+
     fun loadMedia(uri: Uri) {
         faceScanJob?.cancel()
         filmstripJob?.cancel()
-        exportJob?.cancel()
         clearHistory()
 
         viewModelScope.launch {
@@ -194,7 +260,11 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                         ),
                         isLoadingFilmstrip = asset.type == MediaType.VIDEO,
                         videoExportQuality = current.videoExportQuality,
-                        imageExportFormat = current.imageExportFormat
+                        imageExportFormat = current.imageExportFormat,
+                        exportState = BackgroundExportCoordinator.exportState.value,
+                        batchExportState = BackgroundExportCoordinator.batchExportState.value,
+                        isExportSheetMinimized = current.isExportSheetMinimized,
+                        isBatchSheetMinimized = current.isBatchSheetMinimized
                     )
                 }
 
@@ -231,7 +301,6 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     fun closeEditor() {
         faceScanJob?.cancel()
         filmstripJob?.cancel()
-        exportJob?.cancel()
         clearHistory()
         _uiState.update { state ->
             state.filmstripThumbnails.forEach { if (!it.isRecycled) it.recycle() }
@@ -243,7 +312,11 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 watermarkConfig = state.watermarkConfig,
                 watermarkLogoBitmap = state.watermarkLogoBitmap,
                 videoExportQuality = state.videoExportQuality,
-                imageExportFormat = state.imageExportFormat
+                imageExportFormat = state.imageExportFormat,
+                exportState = BackgroundExportCoordinator.exportState.value,
+                batchExportState = BackgroundExportCoordinator.batchExportState.value,
+                isExportSheetMinimized = state.isExportSheetMinimized,
+                isBatchSheetMinimized = state.isBatchSheetMinimized
             )
         }
     }
@@ -254,16 +327,23 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
             state.copy(
                 manualBoxes = emptyList(),
                 selectedManualBoxId = null,
+                selectedFaceTrackId = null,
+                selectedTextOverlayId = null,
                 maskConfig = FaceMaskConfig(),
+                colorGradeConfig = ColorGradeConfig(),
+                transformConfig = TransformConfig(),
+                speedConfig = SpeedConfig(),
+                audioConfig = AudioConfig(),
+                textOverlays = emptyList(),
                 watermarkConfig = WatermarkConfig(),
                 trimCutConfig = TrimCutConfig(
                     totalDurationMs = asset.durationMs,
                     trimStartMs = 0L,
                     trimEndMs = asset.durationMs
                 ),
-                faceTracks = state.faceTracks.map { it.copy(isSelected = true) },
+                faceTracks = state.faceTracks.map { it.copy(isSelected = true, styleOverride = null) },
                 isComparingOriginal = false,
-                snackbarMessage = "Edits reset"
+                snackbarMessage = "All edits reset"
             )
         }
     }
@@ -272,16 +352,8 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.update { it.copy(activeTab = tab) }
     }
 
-    fun setComparingOriginal(comparing: Boolean) {
-        _uiState.update { it.copy(isComparingOriginal = comparing) }
-    }
-
     fun toggleComparingOriginal() {
         _uiState.update { it.copy(isComparingOriginal = !it.isComparingOriginal) }
-    }
-
-    fun toggleMute() {
-        _uiState.update { it.copy(isMuted = !it.isMuted) }
     }
 
     fun setAutoDetectAndBlurOnImport(enabled: Boolean) {
@@ -293,15 +365,16 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.update { it.copy(scanAccuracy = accuracy) }
     }
 
-    /**
-     * One-tap Auto-Detect & Blur: records an Undo snapshot, selects Gaussian Blur across all faces,
-     * and runs ML Kit face detection on the active image or video.
-     */
+    // -------------------------------------------------------------------------
+    // 1. Face Detection, Shapes, Extra Privacy Effects & Per-Face Overrides
+    // -------------------------------------------------------------------------
+
     fun autoDetectAndBlur() {
         if (_uiState.value.mediaAsset == null) return
         updateWithHistory { state ->
             state.copy(
                 isComparingOriginal = false,
+                selectedFaceTrackId = null,
                 maskConfig = state.maskConfig.copy(
                     mode = MaskMode.GAUSSIAN_BLUR,
                     applyToAllFaces = true
@@ -397,13 +470,28 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun setApplyToAllFaces(applyToAll: Boolean) {
-        updateWithHistory { it.copy(maskConfig = it.maskConfig.copy(applyToAllFaces = applyToAll)) }
+        updateWithHistory {
+            it.copy(
+                maskConfig = it.maskConfig.copy(applyToAllFaces = applyToAll),
+                selectedFaceTrackId = if (applyToAll) null else (it.selectedFaceTrackId ?: it.faceTracks.firstOrNull()?.id)
+            )
+        }
+    }
+
+    fun selectFaceTrackForEditing(trackId: Int?) {
+        _uiState.update { state ->
+            state.copy(
+                selectedFaceTrackId = trackId,
+                maskConfig = if (trackId != null) state.maskConfig else state.maskConfig
+            )
+        }
     }
 
     fun toggleFaceSelection(trackId: Int) {
         updateWithHistory { state ->
             state.copy(
                 maskConfig = state.maskConfig.copy(applyToAllFaces = false),
+                selectedFaceTrackId = trackId,
                 faceTracks = state.faceTracks.map { track ->
                     if (track.id == trackId) track.copy(isSelected = !track.isSelected) else track
                 }
@@ -411,32 +499,130 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    private fun updateFocusedFaceOrGlobal(
+        recordUndo: Boolean,
+        globalTransform: (FaceMaskConfig) -> FaceMaskConfig,
+        overrideTransform: (FaceStyleOverride) -> FaceStyleOverride
+    ) {
+        val focusedId = _uiState.value.selectedFaceTrackId
+        if (focusedId == null) {
+            if (recordUndo) {
+                updateWithHistory { it.copy(maskConfig = globalTransform(it.maskConfig)) }
+            } else {
+                beginContinuousEdit()
+                _uiState.update { it.copy(maskConfig = globalTransform(it.maskConfig)) }
+            }
+        } else {
+            val updater: (EditorUiState) -> EditorUiState = { state ->
+                state.copy(
+                    faceTracks = state.faceTracks.map { track ->
+                        if (track.id == focusedId) {
+                            val currentOv = track.styleOverride ?: FaceStyleOverride()
+                            val nextOv = overrideTransform(currentOv)
+                            track.copy(
+                                isSelected = true,
+                                styleOverride = if (nextOv.hasAnyOverride()) nextOv else null
+                            )
+                        } else {
+                            track
+                        }
+                    }
+                )
+            }
+            if (recordUndo) {
+                updateWithHistory(transform = updater)
+            } else {
+                beginContinuousEdit()
+                _uiState.update(updater)
+            }
+        }
+    }
+
+    fun resetFaceStyleOverride(trackId: Int) {
+        updateWithHistory { state ->
+            state.copy(
+                faceTracks = state.faceTracks.map { track ->
+                    if (track.id == trackId) track.copy(styleOverride = null) else track
+                }
+            )
+        }
+    }
+
     fun setMaskMode(mode: MaskMode) {
-        updateWithHistory { it.copy(maskConfig = it.maskConfig.copy(mode = mode)) }
+        updateFocusedFaceOrGlobal(
+            recordUndo = true,
+            globalTransform = { it.copy(mode = mode) },
+            overrideTransform = { it.copy(mode = mode) }
+        )
+    }
+
+    fun setMaskShape(shape: MaskShape) {
+        updateFocusedFaceOrGlobal(
+            recordUndo = true,
+            globalTransform = { it.copy(shape = shape) },
+            overrideTransform = { it.copy(shape = shape) }
+        )
+    }
+
+    fun setMaskSizeScale(scale: Float) {
+        val clamped = scale.coerceIn(0.75f, 1.80f)
+        updateFocusedFaceOrGlobal(
+            recordUndo = false,
+            globalTransform = { it.copy(sizeScale = clamped) },
+            overrideTransform = { it.copy(sizeScale = clamped) }
+        )
+    }
+
+    fun setMaskFeather(feather: Float) {
+        val clamped = feather.coerceIn(0f, 1f)
+        updateFocusedFaceOrGlobal(
+            recordUndo = false,
+            globalTransform = { it.copy(feather = clamped) },
+            overrideTransform = { it.copy(feather = clamped) }
+        )
+    }
+
+    fun setMaskOpacity(opacity: Float) {
+        val clamped = opacity.coerceIn(0.25f, 1f)
+        updateFocusedFaceOrGlobal(
+            recordUndo = false,
+            globalTransform = { it.copy(opacity = clamped) },
+            overrideTransform = { it.copy(opacity = clamped) }
+        )
     }
 
     fun setBlurIntensity(intensity: Float) {
-        beginContinuousEdit()
-        _uiState.update {
-            it.copy(maskConfig = it.maskConfig.copy(blurIntensity = intensity.coerceIn(0.15f, 1.0f)))
-        }
+        val clamped = intensity.coerceIn(0.15f, 1.0f)
+        updateFocusedFaceOrGlobal(
+            recordUndo = false,
+            globalTransform = { it.copy(blurIntensity = clamped) },
+            overrideTransform = { it.copy(blurIntensity = clamped) }
+        )
     }
 
     fun setPixelBlockSize(size: Float) {
-        beginContinuousEdit()
-        _uiState.update {
-            it.copy(maskConfig = it.maskConfig.copy(pixelBlockSize = size.coerceIn(0.1f, 1.0f)))
-        }
+        val clamped = size.coerceIn(0.1f, 1.0f)
+        updateFocusedFaceOrGlobal(
+            recordUndo = false,
+            globalTransform = { it.copy(pixelBlockSize = clamped) },
+            overrideTransform = { it.copy(pixelBlockSize = clamped) }
+        )
     }
 
     fun setSolidMaskColor(argb: Int) {
-        updateWithHistory { it.copy(maskConfig = it.maskConfig.copy(solidColorArgb = argb)) }
+        updateFocusedFaceOrGlobal(
+            recordUndo = true,
+            globalTransform = { it.copy(solidColorArgb = argb) },
+            overrideTransform = { it.copy(solidColorArgb = argb, mode = MaskMode.SOLID_COLOR) }
+        )
     }
 
     fun setSelectedEmoji(emoji: String) {
-        updateWithHistory {
-            it.copy(maskConfig = it.maskConfig.copy(selectedEmoji = emoji, mode = MaskMode.EMOJI))
-        }
+        updateFocusedFaceOrGlobal(
+            recordUndo = true,
+            globalTransform = { it.copy(selectedEmoji = emoji, mode = MaskMode.EMOJI) },
+            overrideTransform = { it.copy(selectedEmoji = emoji, mode = MaskMode.EMOJI) }
+        )
     }
 
     fun setStickerUri(uri: Uri) {
@@ -522,7 +708,293 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    // Watermark controls
+    // -------------------------------------------------------------------------
+    // 2. Color Grading & Filters
+    // -------------------------------------------------------------------------
+
+    fun selectColorPreset(preset: ColorFilterPreset) {
+        updateWithHistory {
+            it.copy(
+                colorGradeConfig = ColorGradeConfig(
+                    preset = preset,
+                    brightness = preset.brightness,
+                    contrast = preset.contrast,
+                    saturation = preset.saturation,
+                    warmth = preset.warmth,
+                    vignette = preset.vignette
+                )
+            )
+        }
+    }
+
+    fun setBrightness(value: Float) {
+        beginContinuousEdit()
+        _uiState.update { it.copy(colorGradeConfig = it.colorGradeConfig.copy(brightness = value.coerceIn(-0.4f, 0.4f))) }
+    }
+
+    fun setContrast(value: Float) {
+        beginContinuousEdit()
+        _uiState.update { it.copy(colorGradeConfig = it.colorGradeConfig.copy(contrast = value.coerceIn(0.5f, 1.6f))) }
+    }
+
+    fun setSaturation(value: Float) {
+        beginContinuousEdit()
+        _uiState.update { it.copy(colorGradeConfig = it.colorGradeConfig.copy(saturation = value.coerceIn(0f, 2.0f))) }
+    }
+
+    fun setWarmth(value: Float) {
+        beginContinuousEdit()
+        _uiState.update { it.copy(colorGradeConfig = it.colorGradeConfig.copy(warmth = value.coerceIn(-0.5f, 0.5f))) }
+    }
+
+    fun setVignette(value: Float) {
+        beginContinuousEdit()
+        _uiState.update { it.copy(colorGradeConfig = it.colorGradeConfig.copy(vignette = value.coerceIn(0f, 0.85f))) }
+    }
+
+    fun resetColorGrade() {
+        updateWithHistory { it.copy(colorGradeConfig = ColorGradeConfig()) }
+    }
+
+    // -------------------------------------------------------------------------
+    // 3. Transform (Aspect Ratio, Rotate, Flip, Zoom)
+    // -------------------------------------------------------------------------
+
+    fun setAspectRatioPreset(preset: AspectRatioPreset) {
+        updateWithHistory { it.copy(transformConfig = it.transformConfig.copy(aspectRatio = preset)) }
+    }
+
+    fun rotateClockwise90() {
+        updateWithHistory {
+            val next = (it.transformConfig.rotationDegrees + 90) % 360
+            it.copy(transformConfig = it.transformConfig.copy(rotationDegrees = next))
+        }
+    }
+
+    fun toggleFlipHorizontal() {
+        updateWithHistory {
+            it.copy(transformConfig = it.transformConfig.copy(flipHorizontal = !it.transformConfig.flipHorizontal))
+        }
+    }
+
+    fun toggleFlipVertical() {
+        updateWithHistory {
+            it.copy(transformConfig = it.transformConfig.copy(flipVertical = !it.transformConfig.flipVertical))
+        }
+    }
+
+    fun setZoomScale(scale: Float) {
+        beginContinuousEdit()
+        _uiState.update {
+            it.copy(transformConfig = it.transformConfig.copy(zoomScale = scale.coerceIn(1.0f, 2.0f)))
+        }
+    }
+
+    fun resetTransform() {
+        updateWithHistory { it.copy(transformConfig = TransformConfig()) }
+    }
+
+    // -------------------------------------------------------------------------
+    // 4. Playback Speed (0.25x .. 4.0x)
+    // -------------------------------------------------------------------------
+
+    fun setSpeedMultiplier(speed: Float, recordUndo: Boolean = false) {
+        val clamped = speed.coerceIn(0.25f, 4.0f)
+        if (recordUndo) {
+            updateWithHistory { it.copy(speedConfig = it.speedConfig.copy(speedMultiplier = clamped)) }
+        } else {
+            beginContinuousEdit()
+            _uiState.update { it.copy(speedConfig = it.speedConfig.copy(speedMultiplier = clamped)) }
+        }
+    }
+
+    fun setPreservePitch(preserve: Boolean) {
+        updateWithHistory { it.copy(speedConfig = it.speedConfig.copy(preservePitch = preserve)) }
+    }
+
+    // -------------------------------------------------------------------------
+    // 5. Audio Studio (Volume, Mute & Background Music Track)
+    // -------------------------------------------------------------------------
+
+    fun toggleMute() {
+        updateWithHistory { it.copy(audioConfig = it.audioConfig.copy(isMuted = !it.audioConfig.isMuted)) }
+    }
+
+    fun setOriginalVolume(volume: Float) {
+        beginContinuousEdit()
+        val clamped = volume.coerceIn(0f, 1f)
+        _uiState.update {
+            it.copy(
+                audioConfig = it.audioConfig.copy(
+                    originalVolume = clamped,
+                    isMuted = clamped <= 0.01f
+                )
+            )
+        }
+    }
+
+    fun setBackgroundMusicUri(uri: Uri) {
+        val displayName = resolveDisplayName(uri) ?: "Music Track"
+        updateWithHistory {
+            it.copy(
+                audioConfig = it.audioConfig.copy(
+                    musicUri = uri,
+                    musicDisplayName = displayName
+                ),
+                snackbarMessage = "Added music: $displayName"
+            )
+        }
+    }
+
+    fun removeBackgroundMusic() {
+        updateWithHistory {
+            it.copy(
+                audioConfig = it.audioConfig.copy(
+                    musicUri = null,
+                    musicDisplayName = null
+                )
+            )
+        }
+    }
+
+    fun setMusicVolume(volume: Float) {
+        beginContinuousEdit()
+        _uiState.update {
+            it.copy(audioConfig = it.audioConfig.copy(musicVolume = volume.coerceIn(0f, 1f)))
+        }
+    }
+
+    fun setLoopMusic(loop: Boolean) {
+        updateWithHistory { it.copy(audioConfig = it.audioConfig.copy(loopMusic = loop)) }
+    }
+
+    // -------------------------------------------------------------------------
+    // 6. Styled Text Captions & Title Overlays
+    // -------------------------------------------------------------------------
+
+    fun addTextOverlay() {
+        val state = _uiState.value
+        val totalMs = state.mediaAsset?.durationMs?.takeIf { it > 0L } ?: Long.MAX_VALUE
+        val count = state.textOverlays.size
+        val item = TextOverlayItem(
+            text = if (count == 0) "MaskFrame" else "Caption ${count + 1}",
+            normalizedX = 0.50f,
+            normalizedY = (0.76f - (count % 3) * 0.14f).coerceIn(0.20f, 0.85f),
+            startMs = 0L,
+            endMs = totalMs
+        )
+        updateWithHistory {
+            it.copy(
+                textOverlays = it.textOverlays + item,
+                selectedTextOverlayId = item.id
+            )
+        }
+    }
+
+    fun selectTextOverlay(id: String?) {
+        _uiState.update { it.copy(selectedTextOverlayId = id) }
+    }
+
+    fun updateTextOverlayContent(id: String, text: String) {
+        beginContinuousEdit()
+        _uiState.update { state ->
+            state.copy(
+                textOverlays = state.textOverlays.map {
+                    if (it.id == id) it.copy(text = text.take(64)) else it
+                }
+            )
+        }
+    }
+
+    fun updateTextOverlayStyle(id: String, style: TextOverlayStyle) {
+        updateWithHistory { state ->
+            state.copy(
+                textOverlays = state.textOverlays.map {
+                    if (it.id == id) it.copy(style = style) else it
+                }
+            )
+        }
+    }
+
+    fun updateTextOverlayFontSize(id: String, sizeSp: Float) {
+        beginContinuousEdit()
+        _uiState.update { state ->
+            state.copy(
+                textOverlays = state.textOverlays.map {
+                    if (it.id == id) it.copy(fontSizeSp = sizeSp.coerceIn(14f, 56f)) else it
+                }
+            )
+        }
+    }
+
+    fun updateTextOverlayColor(id: String, argb: Int) {
+        updateWithHistory { state ->
+            state.copy(
+                textOverlays = state.textOverlays.map {
+                    if (it.id == id) it.copy(textColorArgb = argb) else it
+                }
+            )
+        }
+    }
+
+    fun updateTextOverlayOpacity(id: String, opacity: Float) {
+        beginContinuousEdit()
+        _uiState.update { state ->
+            state.copy(
+                textOverlays = state.textOverlays.map {
+                    if (it.id == id) it.copy(opacity = opacity.coerceIn(0.2f, 1.0f)) else it
+                }
+            )
+        }
+    }
+
+    fun updateTextOverlayTiming(id: String, startMs: Long, endMs: Long) {
+        beginContinuousEdit()
+        val maxDur = _uiState.value.mediaAsset?.durationMs?.coerceAtLeast(500L) ?: Long.MAX_VALUE
+        val safeStart = startMs.coerceIn(0L, (maxDur - 300L).coerceAtLeast(0L))
+        val safeEnd = endMs.coerceIn((safeStart + 300L).coerceAtMost(maxDur), maxDur)
+        _uiState.update { state ->
+            state.copy(
+                textOverlays = state.textOverlays.map {
+                    if (it.id == id) it.copy(startMs = safeStart, endMs = safeEnd) else it
+                }
+            )
+        }
+    }
+
+    fun moveTextOverlay(id: String, dxNorm: Float, dyNorm: Float) {
+        beginContinuousEdit()
+        _uiState.update { state ->
+            state.copy(
+                selectedTextOverlayId = id,
+                textOverlays = state.textOverlays.map { item ->
+                    if (item.id == id) {
+                        item.copy(
+                            normalizedX = (item.normalizedX + dxNorm).coerceIn(0.08f, 0.92f),
+                            normalizedY = (item.normalizedY + dyNorm).coerceIn(0.08f, 0.92f)
+                        )
+                    } else {
+                        item
+                    }
+                }
+            )
+        }
+    }
+
+    fun deleteTextOverlay(id: String) {
+        updateWithHistory { state ->
+            val remaining = state.textOverlays.filterNot { it.id == id }
+            state.copy(
+                textOverlays = remaining,
+                selectedTextOverlayId = if (state.selectedTextOverlayId == id) remaining.lastOrNull()?.id else state.selectedTextOverlayId
+            )
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // 7. Watermark Controls
+    // -------------------------------------------------------------------------
+
     fun setWatermarkType(type: WatermarkType) {
         updateWithHistory { it.copy(watermarkConfig = it.watermarkConfig.copy(type = type)) }
     }
@@ -603,7 +1075,10 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    // Video Trim & Cut controls
+    // -------------------------------------------------------------------------
+    // 8. Video Trim & Cut Controls
+    // -------------------------------------------------------------------------
+
     fun updatePlaybackState(positionMs: Long, isPlaying: Boolean) {
         _uiState.update {
             it.copy(currentPlaybackMs = positionMs.coerceAtLeast(0L), isPlaying = isPlaying)
@@ -718,9 +1193,15 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    // Single-File Export Sheet & Processing
+    // -------------------------------------------------------------------------
+    // Background Single & Batch Export Orchestration (Foreground Service)
+    // -------------------------------------------------------------------------
+
     fun openExportSheet() {
-        _uiState.update { it.copy(exportState = ExportState.Configuring) }
+        _uiState.update { it.copy(isExportSheetMinimized = false) }
+        if (BackgroundExportCoordinator.exportState.value is ExportState.Idle) {
+            BackgroundExportCoordinator.setExportState(ExportState.Configuring)
+        }
     }
 
     fun setVideoExportQuality(quality: VideoExportQuality) {
@@ -734,50 +1215,44 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     fun startExport() {
         val snapshot = _uiState.value
         if (snapshot.mediaAsset == null) return
-        exportJob?.cancel()
-        exportJob = viewModelScope.launch {
-            _uiState.update {
-                it.copy(exportState = ExportState.Processing(0f, "Preparing export..."))
-            }
-            try {
-                val result = exportEngine.export(snapshot) { progress, stage ->
-                    _uiState.update {
-                        it.copy(exportState = ExportState.Processing(progress, stage))
-                    }
-                }
-                _uiState.update { it.copy(exportState = result) }
-            } catch (e: CancellationException) {
-                _uiState.update { it.copy(exportState = ExportState.Idle) }
-                throw e
-            } catch (e: Exception) {
-                _uiState.update {
-                    it.copy(
-                        exportState = ExportState.Error(
-                            e.localizedMessage ?: "Export failed. Please try another format or clip."
-                        )
-                    )
-                }
-            }
+        _uiState.update { it.copy(isExportSheetMinimized = false) }
+        BackgroundExportCoordinator.startSingleExport(appContext, snapshot)
+    }
+
+    fun minimizeExportToBackground() {
+        _uiState.update {
+            it.copy(
+                isExportSheetMinimized = true,
+                snackbarMessage = "Rendering in background • Track progress in notification bar"
+            )
+        }
+    }
+
+    fun reopenBackgroundExportSheet() {
+        val active = activeBackgroundJob.value
+        if (active?.isBatch == true || _uiState.value.batchExportState !is BatchExportState.Idle) {
+            _uiState.update { it.copy(isBatchSheetMinimized = false) }
+        } else {
+            _uiState.update { it.copy(isExportSheetMinimized = false) }
         }
     }
 
     fun cancelExport() {
-        exportJob?.cancel()
-        _uiState.update { it.copy(exportState = ExportState.Idle) }
+        BackgroundExportCoordinator.cancelActive(appContext)
+        _uiState.update { it.copy(isExportSheetMinimized = false) }
     }
 
     fun dismissExportSheet() {
         if (_uiState.value.exportState is ExportState.Processing) {
-            cancelExport()
+            minimizeExportToBackground()
         } else {
-            _uiState.update { it.copy(exportState = ExportState.Idle) }
+            _uiState.update { it.copy(isExportSheetMinimized = false) }
+            BackgroundExportCoordinator.setExportState(ExportState.Idle)
         }
     }
 
-    // Batch Gallery Processing Pipeline
     fun openBatchSelection(uris: List<Uri>) {
         if (uris.isEmpty()) return
-        batchExportJob?.cancel()
         viewModelScope.launch {
             val resolvedItems = uris.mapNotNull { uri ->
                 runCatching {
@@ -793,36 +1268,31 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 _uiState.update { it.copy(snackbarMessage = "Could not load selected gallery files") }
                 return@launch
             }
-            _uiState.update { state ->
-                val hasActiveWatermark = state.watermarkConfig.type != WatermarkType.NONE
-                state.copy(
-                    exportState = ExportState.Idle,
-                    batchExportState = BatchExportState.Configuring(
-                        items = resolvedItems,
-                        includeWatermark = hasActiveWatermark
-                    )
+            val hasActiveWatermark = _uiState.value.watermarkConfig.type != WatermarkType.NONE
+            _uiState.update { it.copy(isBatchSheetMinimized = false) }
+            BackgroundExportCoordinator.setExportState(ExportState.Idle)
+            BackgroundExportCoordinator.setBatchExportState(
+                BatchExportState.Configuring(
+                    items = resolvedItems,
+                    includeWatermark = hasActiveWatermark
                 )
-            }
+            )
         }
     }
 
     fun removeBatchItem(itemId: String) {
-        _uiState.update { state ->
-            val current = state.batchExportState as? BatchExportState.Configuring ?: return@update state
-            val updated = current.items.filterNot { it.id == itemId }
-            if (updated.isEmpty()) {
-                state.copy(batchExportState = BatchExportState.Idle)
-            } else {
-                state.copy(batchExportState = current.copy(items = updated))
-            }
+        val current = BackgroundExportCoordinator.batchExportState.value as? BatchExportState.Configuring ?: return
+        val updated = current.items.filterNot { it.id == itemId }
+        if (updated.isEmpty()) {
+            BackgroundExportCoordinator.setBatchExportState(BatchExportState.Idle)
+        } else {
+            BackgroundExportCoordinator.setBatchExportState(current.copy(items = updated))
         }
     }
 
     fun setBatchIncludeWatermark(include: Boolean) {
-        _uiState.update { state ->
-            val current = state.batchExportState as? BatchExportState.Configuring ?: return@update state
-            state.copy(batchExportState = current.copy(includeWatermark = include))
-        }
+        val current = BackgroundExportCoordinator.batchExportState.value as? BatchExportState.Configuring ?: return
+        BackgroundExportCoordinator.setBatchExportState(current.copy(includeWatermark = include))
     }
 
     fun startBatchExport() {
@@ -830,155 +1300,63 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         val configState = currentState.batchExportState as? BatchExportState.Configuring ?: return
         if (configState.items.isEmpty()) return
 
-        batchExportJob?.cancel()
-        batchExportJob = viewModelScope.launch {
-            val items = configState.items.toMutableList()
-            val totalCount = items.size
-            val savedUris = mutableListOf<Uri>()
-            val sharedMask = currentState.maskConfig.copy(applyToAllFaces = true)
-            val sharedWatermark = if (configState.includeWatermark) {
-                currentState.watermarkConfig
-            } else {
-                WatermarkConfig(type = WatermarkType.NONE)
-            }
-
-            try {
-                for (index in items.indices) {
-                    ensureActive()
-                    val queueItem = items[index]
-
-                    // 1. Detect Faces with ML Kit
-                    items[index] = queueItem.copy(status = BatchItemStatus.DETECTING_FACES)
-                    emitBatchProcessing(items, index, 0.05f, totalCount, "Scanning faces (${index + 1}/$totalCount)…")
-
-                    try {
-                        val asset = metadataLoader.loadAsset(queueItem.uri)
-                        val tracks = if (asset.type == MediaType.IMAGE) {
-                            faceDetectionEngine.detectFacesInImage(asset.uri)
-                        } else {
-                            faceDetectionEngine.scanVideoFaces(
-                                uri = asset.uri,
-                                durationMs = asset.durationMs,
-                                accuracy = currentState.scanAccuracy
-                            ) { scanProgress, _, _ ->
-                                emitBatchProcessing(
-                                    items = items,
-                                    currentIndex = index,
-                                    itemProgress = scanProgress * 0.45f,
-                                    totalCount = totalCount,
-                                    stage = "Scanning faces (${index + 1}/$totalCount)…"
-                                )
-                            }
-                        }
-
-                        // 2. Render & Save via MediaExportEngine
-                        items[index] = items[index].copy(
-                            status = BatchItemStatus.RENDERING,
-                            detectedFaces = tracks.size
-                        )
-                        val itemEditorState = EditorUiState(
-                            mediaAsset = asset,
-                            faceTracks = tracks,
-                            maskConfig = sharedMask,
-                            stickerBitmap = currentState.stickerBitmap,
-                            watermarkConfig = sharedWatermark,
-                            watermarkLogoBitmap = currentState.watermarkLogoBitmap,
-                            trimCutConfig = TrimCutConfig(
-                                totalDurationMs = asset.durationMs,
-                                trimStartMs = 0L,
-                                trimEndMs = asset.durationMs
-                            ),
-                            videoExportQuality = currentState.videoExportQuality,
-                            imageExportFormat = currentState.imageExportFormat
-                        )
-
-                        val result = exportEngine.export(itemEditorState) { renderProgress, _ ->
-                            emitBatchProcessing(
-                                items = items,
-                                currentIndex = index,
-                                itemProgress = 0.45f + renderProgress * 0.55f,
-                                totalCount = totalCount,
-                                stage = "Rendering ${asset.displayName} (${index + 1}/$totalCount)…"
-                            )
-                        }
-
-                        items[index] = items[index].copy(
-                            status = BatchItemStatus.SAVED,
-                            outputUri = result.outputUri,
-                            outputMimeType = result.mimeType
-                        )
-                        savedUris.add(result.outputUri)
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        items[index] = items[index].copy(
-                            status = BatchItemStatus.FAILED,
-                            errorMessage = e.localizedMessage ?: "Export error"
-                        )
-                    }
-                }
-
-                _uiState.update {
-                    it.copy(
-                        batchExportState = BatchExportState.Completed(
-                            items = items.toList(),
-                            savedUris = savedUris.toList()
-                        ),
-                        snackbarMessage = "Batch complete: ${savedUris.size} of $totalCount saved to gallery"
-                    )
-                }
-            } catch (e: CancellationException) {
-                _uiState.update { it.copy(batchExportState = BatchExportState.Idle) }
-                throw e
-            } catch (e: Exception) {
-                _uiState.update {
-                    it.copy(
-                        batchExportState = BatchExportState.Error(
-                            e.localizedMessage ?: "Batch export interrupted"
-                        )
-                    )
-                }
-            }
+        _uiState.update { it.copy(isBatchSheetMinimized = false) }
+        val sharedWatermark = if (configState.includeWatermark) {
+            currentState.watermarkConfig
+        } else {
+            WatermarkConfig(type = WatermarkType.NONE)
         }
+        BackgroundExportCoordinator.startBatchExport(
+            context = appContext,
+            job = PendingExportJob.Batch(
+                items = configState.items,
+                sharedMask = currentState.maskConfig.copy(applyToAllFaces = true),
+                sharedColorGrade = currentState.colorGradeConfig,
+                sharedTransform = currentState.transformConfig,
+                sharedWatermark = sharedWatermark,
+                stickerBitmap = currentState.stickerBitmap,
+                watermarkLogoBitmap = currentState.watermarkLogoBitmap,
+                scanAccuracy = currentState.scanAccuracy,
+                videoExportQuality = currentState.videoExportQuality,
+                imageExportFormat = currentState.imageExportFormat
+            )
+        )
     }
 
-    private fun emitBatchProcessing(
-        items: List<BatchQueueItem>,
-        currentIndex: Int,
-        itemProgress: Float,
-        totalCount: Int,
-        stage: String
-    ) {
-        val clampedItem = itemProgress.coerceIn(0f, 1f)
-        val overall = ((currentIndex + clampedItem) / totalCount.coerceAtLeast(1)).coerceIn(0f, 1f)
+    fun minimizeBatchToBackground() {
         _uiState.update {
             it.copy(
-                batchExportState = BatchExportState.Processing(
-                    items = items.toList(),
-                    currentIndex = currentIndex,
-                    itemProgress = clampedItem,
-                    overallProgress = overall,
-                    stage = stage
-                )
+                isBatchSheetMinimized = true,
+                snackbarMessage = "Batch running in background • Check notification bar"
             )
         }
     }
 
     fun cancelBatchExport() {
-        batchExportJob?.cancel()
-        _uiState.update { it.copy(batchExportState = BatchExportState.Idle) }
+        BackgroundExportCoordinator.cancelActive(appContext)
+        _uiState.update { it.copy(isBatchSheetMinimized = false) }
     }
 
     fun dismissBatchSheet() {
         if (_uiState.value.batchExportState is BatchExportState.Processing) {
-            cancelBatchExport()
+            minimizeBatchToBackground()
         } else {
-            _uiState.update { it.copy(batchExportState = BatchExportState.Idle) }
+            _uiState.update { it.copy(isBatchSheetMinimized = false) }
+            BackgroundExportCoordinator.setBatchExportState(BatchExportState.Idle)
         }
     }
 
     fun consumeSnackbar() {
         _uiState.update { it.copy(snackbarMessage = null) }
+    }
+
+    private fun resolveDisplayName(uri: Uri): String? {
+        return runCatching {
+            appContext.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                val idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (idx >= 0 && c.moveToFirst()) c.getString(idx) else null
+            }
+        }.getOrNull()
     }
 
     override fun onCleared() {

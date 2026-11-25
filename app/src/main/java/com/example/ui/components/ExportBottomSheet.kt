@@ -63,12 +63,13 @@ fun ExportBottomSheet(
     onSelectImageFormat: (ImageExportFormat) -> Unit,
     onStartExport: () -> Unit,
     onApplyToBatch: () -> Unit,
+    onMinimizeToBackground: () -> Unit,
     onCancelExport: () -> Unit,
     onDismiss: () -> Unit,
     onShareExport: (Uri, String) -> Unit,
     onOpenExport: (Uri, String) -> Unit
 ) {
-    if (uiState.exportState is ExportState.Idle) return
+    if (uiState.exportState is ExportState.Idle || uiState.isExportSheetMinimized) return
 
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val isVideo = uiState.mediaAsset?.type == MediaType.VIDEO
@@ -241,15 +242,37 @@ fun ExportBottomSheet(
                         )
                     }
 
-                    OutlinedButton(
-                        onClick = onCancelExport,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(48.dp)
-                            .testTag("cancel_export_button"),
-                        shape = RoundedCornerShape(12.dp)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        Text(stringResource(R.string.action_cancel))
+                        Button(
+                            onClick = onMinimizeToBackground,
+                            modifier = Modifier
+                                .weight(1.35f)
+                                .height(48.dp)
+                                .testTag("run_export_background_button"),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = primary,
+                                contentColor = MaterialTheme.colorScheme.onPrimary
+                            )
+                        ) {
+                            Text(
+                                text = stringResource(R.string.action_continue_background),
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = onCancelExport,
+                            modifier = Modifier
+                                .weight(0.85f)
+                                .height(48.dp)
+                                .testTag("cancel_export_button"),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text(stringResource(R.string.action_cancel))
+                        }
                     }
                 }
 

@@ -90,11 +90,12 @@ fun BatchExportSheet(
     onRemoveItem: (String) -> Unit,
     onPickDifferentBatch: () -> Unit,
     onStartBatch: () -> Unit,
+    onMinimizeToBackground: () -> Unit,
     onCancelBatch: () -> Unit,
     onDismiss: () -> Unit,
     onShareAll: (List<Uri>) -> Unit
 ) {
-    if (uiState.batchExportState is BatchExportState.Idle) return
+    if (uiState.batchExportState is BatchExportState.Idle || uiState.isBatchSheetMinimized) return
 
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val primary = MaterialTheme.colorScheme.primary
@@ -349,15 +350,37 @@ fun BatchExportSheet(
                         }
                     }
 
-                    OutlinedButton(
-                        onClick = onCancelBatch,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(48.dp)
-                            .testTag("cancel_batch_button"),
-                        shape = RoundedCornerShape(12.dp)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        Text(stringResource(R.string.action_cancel))
+                        Button(
+                            onClick = onMinimizeToBackground,
+                            modifier = Modifier
+                                .weight(1.35f)
+                                .height(48.dp)
+                                .testTag("run_batch_background_button"),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = primary,
+                                contentColor = MaterialTheme.colorScheme.onPrimary
+                            )
+                        ) {
+                            Text(
+                                text = stringResource(R.string.action_continue_background),
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = onCancelBatch,
+                            modifier = Modifier
+                                .weight(0.85f)
+                                .height(48.dp)
+                                .testTag("cancel_batch_button"),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text(stringResource(R.string.action_cancel))
+                        }
                     }
                 }
 

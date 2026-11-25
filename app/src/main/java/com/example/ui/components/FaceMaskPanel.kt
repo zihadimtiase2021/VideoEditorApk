@@ -25,13 +25,20 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddBox
 import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.BlurOn
+import androidx.compose.material.icons.filled.BrokenImage
+import androidx.compose.material.icons.filled.CenterFocusStrong
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.EmojiEmotions
 import androidx.compose.material.icons.filled.Face
+import androidx.compose.material.icons.filled.Grain
 import androidx.compose.material.icons.filled.GridOn
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.InvertColors
+import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Square
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilterChip
@@ -64,10 +71,12 @@ import com.example.R
 import com.example.model.EditorUiState
 import com.example.model.FaceScanState
 import com.example.model.MaskMode
+import com.example.model.MaskShape
 import com.example.model.MediaType
 import com.example.model.ScanAccuracy
 import com.example.model.StudioPalettes
 import com.example.ui.theme.TimecodeTextStyle
+import java.util.Locale
 import kotlin.math.roundToInt
 
 @Composable
@@ -79,8 +88,14 @@ fun FaceMaskPanel(
     onCancelScan: () -> Unit,
     onAddManualBox: () -> Unit,
     onSetApplyToAll: (Boolean) -> Unit,
+    onSelectFaceForEditing: (Int?) -> Unit,
+    onResetFaceOverride: (Int) -> Unit,
     onToggleFaceTrack: (Int) -> Unit,
     onSelectMaskMode: (MaskMode) -> Unit,
+    onSelectMaskShape: (MaskShape) -> Unit,
+    onMaskSizeScaleChange: (Float) -> Unit,
+    onMaskFeatherChange: (Float) -> Unit,
+    onMaskOpacityChange: (Float) -> Unit,
     onBlurIntensityChange: (Float) -> Unit,
     onPixelSizeChange: (Float) -> Unit,
     onSolidColorChange: (Int) -> Unit,
@@ -92,6 +107,19 @@ fun FaceMaskPanel(
 ) {
     val isVideo = uiState.mediaAsset?.type == MediaType.VIDEO
     val primary = MaterialTheme.colorScheme.primary
+    val focusedTrack = uiState.faceTracks.firstOrNull { it.id == uiState.selectedFaceTrackId }
+    val ov = focusedTrack?.styleOverride
+
+    // Active effective values (either focused individual face override or global)
+    val activeMode = ov?.mode ?: uiState.maskConfig.mode
+    val activeShape = ov?.shape ?: uiState.maskConfig.shape
+    val activeSizeScale = ov?.sizeScale ?: uiState.maskConfig.sizeScale
+    val activeFeather = ov?.feather ?: uiState.maskConfig.feather
+    val activeOpacity = ov?.opacity ?: uiState.maskConfig.opacity
+    val activeBlurIntensity = ov?.blurIntensity ?: uiState.maskConfig.blurIntensity
+    val activePixelSize = ov?.pixelBlockSize ?: uiState.maskConfig.pixelBlockSize
+    val activeSolidColor = ov?.solidColorArgb ?: uiState.maskConfig.solidColorArgb
+    val activeEmoji = ov?.selectedEmoji ?: uiState.maskConfig.selectedEmoji
 
     Column(
         modifier = modifier
@@ -100,7 +128,7 @@ fun FaceMaskPanel(
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // 1. Compact Scan & Manual Box Action Row
+        // 1. Scan & Manual Box Action Card
         Surface(
             shape = RoundedCornerShape(14.dp),
             color = MaterialTheme.colorScheme.surfaceContainer,
@@ -120,7 +148,7 @@ fun FaceMaskPanel(
                         onClick = if (isScanning) onCancelScan else onAutoDetectAndBlur,
                         modifier = Modifier
                             .weight(1f)
-                            .height(44.dp)
+                            .height(48.dp)
                             .testTag("scan_faces_button"),
                         shape = RoundedCornerShape(10.dp),
                         colors = ButtonDefaults.buttonColors(
@@ -148,7 +176,7 @@ fun FaceMaskPanel(
                     OutlinedButton(
                         onClick = onAddManualBox,
                         modifier = Modifier
-                            .height(44.dp)
+                            .height(48.dp)
                             .testTag("add_manual_box_button"),
                         shape = RoundedCornerShape(10.dp),
                         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
@@ -273,84 +301,204 @@ fun FaceMaskPanel(
             }
         }
 
-        // 2. Scope Selector (All Faces / Selected)
+        // 2. Per-Face Target & Individual Customization Strip
         if (uiState.faceTracks.isNotEmpty()) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+            ) {
+                Column(
+                    modifier = Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Text(
-                        text = "Scope",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(modifier = Modifier.weight(1f))
-                    FilterChip(
-                        selected = uiState.maskConfig.applyToAllFaces,
-                        onClick = { onSetApplyToAll(true) },
-                        label = { Text(stringResource(R.string.scope_all_faces)) },
-                        modifier = Modifier.testTag("scope_all_faces_chip"),
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                            selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = if (focusedTrack != null) "Editing ${focusedTrack.label}" else "Editing All Faces (Global)",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = if (focusedTrack != null) primary else MaterialTheme.colorScheme.onSurface
                         )
-                    )
-                    FilterChip(
-                        selected = !uiState.maskConfig.applyToAllFaces,
-                        onClick = { onSetApplyToAll(false) },
-                        label = { Text(stringResource(R.string.scope_selected_faces)) },
-                        modifier = Modifier.testTag("scope_selected_faces_chip"),
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                            selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
-                        )
-                    )
-                }
-
-                if (!uiState.maskConfig.applyToAllFaces) {
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        items(uiState.faceTracks, key = { it.id }) { track ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                             FilterChip(
-                                selected = track.isSelected,
-                                onClick = { onToggleFaceTrack(track.id) },
+                                selected = uiState.maskConfig.applyToAllFaces,
+                                onClick = { onSetApplyToAll(true) },
+                                label = { Text(stringResource(R.string.scope_all_faces), style = MaterialTheme.typography.labelSmall) },
+                                modifier = Modifier.testTag("scope_all_faces_chip"),
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                            )
+                            FilterChip(
+                                selected = !uiState.maskConfig.applyToAllFaces,
+                                onClick = { onSetApplyToAll(false) },
+                                label = { Text(stringResource(R.string.scope_selected_faces), style = MaterialTheme.typography.labelSmall) },
+                                modifier = Modifier.testTag("scope_selected_faces_chip"),
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                            )
+                        }
+                    }
+
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        item(key = "global_face_target") {
+                            FilterChip(
+                                selected = focusedTrack == null,
+                                onClick = { onSelectFaceForEditing(null) },
+                                label = { Text("Global") },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                ),
+                                modifier = Modifier.testTag("face_target_global")
+                            )
+                        }
+                        items(uiState.faceTracks, key = { it.id }) { track ->
+                            val isFocused = focusedTrack?.id == track.id
+                            val hasCustom = track.styleOverride?.hasAnyOverride() == true
+                            val isVisible = uiState.maskConfig.applyToAllFaces || track.isSelected
+                            FilterChip(
+                                selected = isFocused,
+                                onClick = { onSelectFaceForEditing(track.id) },
                                 leadingIcon = {
                                     Icon(
-                                        imageVector = if (track.isSelected) Icons.Filled.Check else Icons.Filled.Face,
+                                        imageVector = if (isVisible) Icons.Filled.Face else Icons.Filled.VisibilityOff,
                                         contentDescription = null,
                                         modifier = Modifier.size(16.dp)
                                     )
                                 },
-                                label = { Text(track.label) },
+                                label = {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                    ) {
+                                        Text(track.label)
+                                        if (hasCustom) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(6.dp)
+                                                    .clip(CircleShape)
+                                                    .background(primary)
+                                            )
+                                        }
+                                    }
+                                },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                ),
                                 modifier = Modifier.testTag("face_chip_${track.id}")
                             )
+                        }
+                    }
+
+                    if (focusedTrack != null) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            val isVisible = uiState.maskConfig.applyToAllFaces || focusedTrack.isSelected
+                            OutlinedButton(
+                                onClick = { onToggleFaceTrack(focusedTrack.id) },
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp),
+                                modifier = Modifier
+                                    .height(36.dp)
+                                    .testTag("face_toggle_visibility_button")
+                            ) {
+                                Icon(
+                                    imageVector = if (isVisible) Icons.Filled.Visibility else Icons.Filled.VisibilityOff,
+                                    contentDescription = null,
+                                    tint = if (isVisible) primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = if (isVisible) "Mask On" else "Mask Off",
+                                    style = MaterialTheme.typography.labelMedium
+                                )
+                            }
+
+                            if (focusedTrack.styleOverride?.hasAnyOverride() == true) {
+                                TextButton(
+                                    onClick = { onResetFaceOverride(focusedTrack.id) },
+                                    modifier = Modifier.testTag("face_reset_override_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.RestartAlt,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                    Text(" Reset to Global", style = MaterialTheme.typography.labelMedium)
+                                }
+                            }
                         }
                     }
                 }
             }
         }
 
-        // 3. Mask Mode Selector
+        // 3. Mask Effect Mode Selector (All 9 Privacy Effects)
+        Text(
+            text = "Privacy Effect",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             items(MaskMode.entries) { mode ->
                 MaskModePill(
                     label = mode.label,
                     icon = maskModeIcon(mode),
-                    selected = uiState.maskConfig.mode == mode,
+                    selected = activeMode == mode,
                     onClick = { onSelectMaskMode(mode) },
                     modifier = Modifier.testTag("mask_mode_${mode.name.lowercase()}")
                 )
             }
         }
 
-        // 4. Mode Parameters
-        when (uiState.maskConfig.mode) {
-            MaskMode.GAUSSIAN_BLUR -> {
+        // 4. Mask Shape Selector (5 Custom Shapes)
+        if (activeMode != MaskMode.EMOJI && activeMode != MaskMode.STICKER) {
+            Text(
+                text = "Mask Shape",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(MaskShape.entries) { shape ->
+                    MaskShapePill(
+                        shape = shape,
+                        selected = activeShape == shape,
+                        onClick = { onSelectMaskShape(shape) },
+                        modifier = Modifier.testTag("mask_shape_${shape.name.lowercase()}")
+                    )
+                }
+            }
+        }
+
+        // 5. Mode-Specific Controls
+        when (activeMode) {
+            MaskMode.GAUSSIAN_BLUR,
+            MaskMode.FROSTED_GLASS,
+            MaskMode.GLITCH,
+            MaskMode.SPOTLIGHT -> {
+                val strengthLabel = when (activeMode) {
+                    MaskMode.GAUSSIAN_BLUR -> "Blur Intensity"
+                    MaskMode.FROSTED_GLASS -> "Frost Diffusion"
+                    MaskMode.GLITCH -> "Glitch Distortion"
+                    MaskMode.SPOTLIGHT -> "Background Blur"
+                    else -> "Intensity"
+                }
                 StudioSliderRow(
-                    label = "Blur Intensity",
-                    valueText = "${(uiState.maskConfig.blurIntensity * 100).roundToInt()}%",
-                    value = uiState.maskConfig.blurIntensity,
+                    label = strengthLabel,
+                    valueText = "${(activeBlurIntensity * 100).roundToInt()}%",
+                    value = activeBlurIntensity,
                     valueRange = 0.15f..1.0f,
                     onValueChange = onBlurIntensityChange,
                     onValueChangeFinished = onSliderFinished,
@@ -360,13 +508,21 @@ fun FaceMaskPanel(
 
             MaskMode.PIXELATE -> {
                 StudioSliderRow(
-                    label = "Mosaic Size",
-                    valueText = "${(uiState.maskConfig.pixelBlockSize * 100).roundToInt()}%",
-                    value = uiState.maskConfig.pixelBlockSize,
+                    label = "Mosaic Block Size",
+                    valueText = "${(activePixelSize * 100).roundToInt()}%",
+                    value = activePixelSize,
                     valueRange = 0.10f..1.0f,
                     onValueChange = onPixelSizeChange,
                     onValueChangeFinished = onSliderFinished,
                     testTag = "pixel_size_slider"
+                )
+            }
+
+            MaskMode.INVERT -> {
+                Text(
+                    text = "Color Inversion active — adjust shape, expansion, feathering, or opacity below.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
@@ -382,7 +538,7 @@ fun FaceMaskPanel(
                             val argb = color.toArgb()
                             ColorSwatchDot(
                                 color = color,
-                                selected = uiState.maskConfig.solidColorArgb == argb,
+                                selected = activeSolidColor == argb,
                                 onClick = { onSolidColorChange(argb) }
                             )
                         }
@@ -393,7 +549,7 @@ fun FaceMaskPanel(
             MaskMode.EMOJI -> {
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(StudioPalettes.privacyEmojis) { emoji ->
-                        val selected = uiState.maskConfig.selectedEmoji == emoji
+                        val selected = activeEmoji == emoji
                         Surface(
                             onClick = { onEmojiSelected(emoji) },
                             shape = RoundedCornerShape(12.dp),
@@ -451,12 +607,58 @@ fun FaceMaskPanel(
                 }
             }
         }
+
+        // 6. Universal Precision Geometry Sliders (Size Expansion, Edge Feather, Opacity)
+        Surface(
+            shape = RoundedCornerShape(14.dp),
+            color = MaterialTheme.colorScheme.surfaceContainer,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                StudioSliderRow(
+                    label = "Size Expansion",
+                    valueText = String.format(Locale.US, "%.2fx", activeSizeScale),
+                    value = activeSizeScale,
+                    valueRange = 0.75f..1.80f,
+                    onValueChange = onMaskSizeScaleChange,
+                    onValueChangeFinished = onSliderFinished,
+                    testTag = "mask_size_scale_slider"
+                )
+                if (activeMode != MaskMode.EMOJI && activeMode != MaskMode.STICKER) {
+                    StudioSliderRow(
+                        label = "Edge Feathering",
+                        valueText = "${(activeFeather * 100).roundToInt()}%",
+                        value = activeFeather,
+                        valueRange = 0.0f..1.0f,
+                        onValueChange = onMaskFeatherChange,
+                        onValueChangeFinished = onSliderFinished,
+                        testTag = "mask_feather_slider"
+                    )
+                }
+                StudioSliderRow(
+                    label = "Mask Opacity",
+                    valueText = "${(activeOpacity * 100).roundToInt()}%",
+                    value = activeOpacity,
+                    valueRange = 0.25f..1.0f,
+                    onValueChange = onMaskOpacityChange,
+                    onValueChangeFinished = onSliderFinished,
+                    testTag = "mask_opacity_slider"
+                )
+            }
+        }
     }
 }
 
 private fun maskModeIcon(mode: MaskMode): ImageVector = when (mode) {
     MaskMode.GAUSSIAN_BLUR -> Icons.Filled.BlurOn
     MaskMode.PIXELATE -> Icons.Filled.GridOn
+    MaskMode.FROSTED_GLASS -> Icons.Filled.Grain
+    MaskMode.GLITCH -> Icons.Filled.BrokenImage
+    MaskMode.INVERT -> Icons.Filled.InvertColors
+    MaskMode.SPOTLIGHT -> Icons.Filled.CenterFocusStrong
     MaskMode.SOLID_COLOR -> Icons.Filled.Square
     MaskMode.EMOJI -> Icons.Filled.EmojiEmotions
     MaskMode.STICKER -> Icons.Filled.Image
@@ -479,7 +681,7 @@ private fun MaskModePill(
             width = if (selected) 1.5.dp else 1.dp,
             color = if (selected) primary else MaterialTheme.colorScheme.outlineVariant
         ),
-        modifier = modifier.height(44.dp)
+        modifier = modifier.height(48.dp)
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 12.dp),
@@ -503,6 +705,45 @@ private fun MaskModePill(
 }
 
 @Composable
+private fun MaskShapePill(
+    shape: MaskShape,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val primary = MaterialTheme.colorScheme.primary
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(10.dp),
+        color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainer,
+        border = BorderStroke(
+            width = if (selected) 1.5.dp else 1.dp,
+            color = if (selected) primary else MaterialTheme.colorScheme.outlineVariant
+        ),
+        modifier = modifier.height(48.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(7.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(width = if (shape == MaskShape.OVAL) 20.dp else 16.dp, height = 16.dp)
+                    .clip(maskComposeShape(shape))
+                    .background(if (selected) primary else MaterialTheme.colorScheme.onSurfaceVariant)
+            )
+            Text(
+                text = shape.label,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
+            )
+        }
+    }
+}
+
+@Composable
 internal fun ColorSwatchDot(
     color: Color,
     selected: Boolean,
@@ -511,14 +752,14 @@ internal fun ColorSwatchDot(
     val primary = MaterialTheme.colorScheme.primary
     Box(
         modifier = Modifier
-            .size(44.dp)
+            .size(48.dp)
             .clip(CircleShape)
             .border(
                 width = if (selected) 2.dp else 1.dp,
                 color = if (selected) primary else MaterialTheme.colorScheme.outline,
                 shape = CircleShape
             )
-            .padding(4.dp)
+            .padding(5.dp)
             .clip(CircleShape)
             .background(color)
             .clickable(onClick = onClick)
@@ -553,7 +794,7 @@ internal fun StudioSliderRow(
             )
         }
         Slider(
-            value = value,
+            value = value.coerceIn(valueRange.start, valueRange.endInclusive),
             onValueChange = onValueChange,
             onValueChangeFinished = onValueChangeFinished,
             valueRange = valueRange,

@@ -2,11 +2,17 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Zero-permission Android Photo Picker is used for importing media.
+    <!-- Zero-permission Android Photo Picker & SAF OpenDocument are used for importing media & audio.
          Legacy write permission is scoped strictly to API 24-28 for MediaStore gallery saves. -->
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
+
+    <!-- Play-compliant Background Media Export Foreground Service & live notification bar -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROCESSING" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:allowBackup="true"
@@ -17,10 +23,12 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.MaskFrame">
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:label="@string/app_name"
+            android:launchMode="singleTop"
             android:theme="@style/Theme.MaskFrame"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
@@ -28,6 +36,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".service.MediaExportService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProcessing|dataSync" />
     </application>
 
 </manifest>

@@ -11,16 +11,18 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -32,26 +34,25 @@ import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.BrandingWatermark
 import androidx.compose.material.icons.filled.Compare
 import androidx.compose.material.icons.filled.ContentCut
+import androidx.compose.material.icons.filled.Crop
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FaceRetouchingOff
 import androidx.compose.material.icons.filled.Forward5
+import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay5
 import androidx.compose.material.icons.filled.RestartAlt
+import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.TextFields
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Visibility
-import androidx.compose.material.icons.outlined.BrandingWatermark
-import androidx.compose.material.icons.outlined.ContentCut
-import androidx.compose.material.icons.outlined.FaceRetouchingOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
@@ -64,25 +65,36 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import com.example.R
+import com.example.model.AspectRatioPreset
+import com.example.model.ColorFilterPreset
 import com.example.model.EditorTab
 import com.example.model.EditorUiState
 import com.example.model.MaskMode
+import com.example.model.MaskShape
 import com.example.model.MediaType
 import com.example.model.ScanAccuracy
+import com.example.model.TextOverlayStyle
 import com.example.model.WatermarkPositionPreset
 import com.example.model.WatermarkType
 import com.example.model.formatTimecode
+import com.example.ui.components.AdjustPanel
+import com.example.ui.components.AudioPanel
 import com.example.ui.components.FaceMaskPanel
 import com.example.ui.components.PreviewStage
+import com.example.ui.components.SpeedPanel
+import com.example.ui.components.TextOverlayPanel
+import com.example.ui.components.TransformPanel
 import com.example.ui.components.TrimCutPanel
 import com.example.ui.components.WatermarkPanel
 import com.example.ui.theme.TimecodeTextStyle
@@ -100,14 +112,21 @@ fun EditorWorkspaceScreen(
     onSelectTab: (EditorTab) -> Unit,
     onToggleComparingOriginal: () -> Unit,
     onToggleMute: () -> Unit,
+    // 1. Face Mask studio
     onToggleAutoDetectOnImport: (Boolean) -> Unit,
     onSelectAccuracy: (ScanAccuracy) -> Unit,
     onAutoDetectAndBlur: () -> Unit,
     onCancelScan: () -> Unit,
     onAddManualBox: () -> Unit,
     onSetApplyToAll: (Boolean) -> Unit,
+    onSelectFaceForEditing: (Int?) -> Unit,
+    onResetFaceOverride: (Int) -> Unit,
     onToggleFaceTrack: (Int) -> Unit,
     onSelectMaskMode: (MaskMode) -> Unit,
+    onSelectMaskShape: (MaskShape) -> Unit,
+    onMaskSizeScaleChange: (Float) -> Unit,
+    onMaskFeatherChange: (Float) -> Unit,
+    onMaskOpacityChange: (Float) -> Unit,
     onBlurIntensityChange: (Float) -> Unit,
     onPixelSizeChange: (Float) -> Unit,
     onSolidColorChange: (Int) -> Unit,
@@ -119,6 +138,43 @@ fun EditorWorkspaceScreen(
     onMoveManualBox: (String, Float, Float) -> Unit,
     onResizeManualBox: (String, Float, Float) -> Unit,
     onDeleteManualBox: (String) -> Unit,
+    // 2. Color Adjust
+    onSelectColorPreset: (ColorFilterPreset) -> Unit,
+    onBrightnessChange: (Float) -> Unit,
+    onContrastChange: (Float) -> Unit,
+    onSaturationChange: (Float) -> Unit,
+    onWarmthChange: (Float) -> Unit,
+    onVignetteChange: (Float) -> Unit,
+    onResetColorGrade: () -> Unit,
+    // 3. Transform
+    onSelectAspectRatio: (AspectRatioPreset) -> Unit,
+    onRotate90: () -> Unit,
+    onToggleFlipH: () -> Unit,
+    onToggleFlipV: () -> Unit,
+    onZoomScaleChange: (Float) -> Unit,
+    onResetTransform: () -> Unit,
+    // 4. Speed
+    onSelectSpeedPreset: (Float) -> Unit,
+    onSpeedSliderChange: (Float) -> Unit,
+    onTogglePreservePitch: (Boolean) -> Unit,
+    // 5. Audio
+    onOriginalVolumeChange: (Float) -> Unit,
+    onPickMusic: () -> Unit,
+    onRemoveMusic: () -> Unit,
+    onMusicVolumeChange: (Float) -> Unit,
+    onToggleLoopMusic: (Boolean) -> Unit,
+    // 6. Text Overlays
+    onAddTextOverlay: () -> Unit,
+    onSelectTextOverlay: (String?) -> Unit,
+    onDeleteTextOverlay: (String) -> Unit,
+    onUpdateTextContent: (String, String) -> Unit,
+    onUpdateTextStyle: (String, TextOverlayStyle) -> Unit,
+    onUpdateTextFontSize: (String, Float) -> Unit,
+    onUpdateTextColor: (String, Int) -> Unit,
+    onUpdateTextOpacity: (String, Float) -> Unit,
+    onUpdateTextTiming: (String, Long, Long) -> Unit,
+    onMoveTextOverlay: (String, Float, Float) -> Unit,
+    // 7. Watermark
     onSelectWatermarkType: (WatermarkType) -> Unit,
     onWatermarkTextChange: (String) -> Unit,
     onWatermarkFontSizeChange: (Float) -> Unit,
@@ -128,6 +184,7 @@ fun EditorWorkspaceScreen(
     onWatermarkOpacityChange: (Float) -> Unit,
     onSelectWatermarkPreset: (WatermarkPositionPreset) -> Unit,
     onMoveWatermark: (Float, Float) -> Unit,
+    // 8. Trim & Cut
     onUpdatePlaybackState: (Long, Boolean) -> Unit,
     onUpdateTrimRange: (Long, Long) -> Unit,
     onSetTrimInAtPlayhead: () -> Unit,
@@ -156,18 +213,48 @@ fun EditorWorkspaceScreen(
         }
     }
 
-    LaunchedEffect(exoPlayer, uiState.isMuted) {
-        exoPlayer?.volume = if (uiState.isMuted) 0f else 1f
+    val musicUri = uiState.audioConfig.musicUri
+    val musicPlayer = remember(musicUri, isVideo) {
+        if (isVideo && musicUri != null) {
+            ExoPlayer.Builder(context).build().apply {
+                setMediaItem(MediaItem.fromUri(musicUri))
+                repeatMode = if (uiState.audioConfig.loopMusic) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
+                prepare()
+            }
+        } else {
+            null
+        }
+    }
+
+    // Live audio volume & speed sync
+    LaunchedEffect(exoPlayer, uiState.audioConfig.effectiveOriginalVolume, uiState.isComparingOriginal) {
+        exoPlayer?.volume = if (uiState.isComparingOriginal) 1f else uiState.audioConfig.effectiveOriginalVolume
+    }
+
+    LaunchedEffect(exoPlayer, uiState.speedConfig, uiState.isComparingOriginal) {
+        val speed = if (uiState.isComparingOriginal) 1f else uiState.speedConfig.speedMultiplier.coerceIn(0.25f, 4.0f)
+        val pitch = if (uiState.isComparingOriginal || uiState.speedConfig.preservePitch) 1f else speed
+        exoPlayer?.playbackParameters = PlaybackParameters(speed, pitch)
+    }
+
+    LaunchedEffect(musicPlayer, uiState.audioConfig.musicVolume, uiState.audioConfig.loopMusic, uiState.isComparingOriginal) {
+        musicPlayer?.let { mp ->
+            mp.volume = if (uiState.isComparingOriginal) 0f else uiState.audioConfig.musicVolume.coerceIn(0f, 1f)
+            mp.repeatMode = if (uiState.audioConfig.loopMusic) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
+        }
     }
 
     DisposableEffect(exoPlayer) {
-        onDispose {
-            exoPlayer?.release()
-        }
+        onDispose { exoPlayer?.release() }
+    }
+
+    DisposableEffect(musicPlayer) {
+        onDispose { musicPlayer?.release() }
     }
 
     val latestTrim by rememberUpdatedState(uiState.trimCutConfig)
     val latestPlaybackCallback by rememberUpdatedState(onUpdatePlaybackState)
+    val latestMusicPlayer by rememberUpdatedState(musicPlayer)
 
     LaunchedEffect(exoPlayer) {
         if (exoPlayer == null) return@LaunchedEffect
@@ -185,10 +272,19 @@ fun EditorWorkspaceScreen(
                     }
                     pos >= trim.trimEndMs && trim.trimEndMs > trim.trimStartMs -> {
                         exoPlayer.seekTo(trim.trimStartMs)
+                        latestMusicPlayer?.seekTo(0L)
                     }
                     pos < trim.trimStartMs -> {
                         exoPlayer.seekTo(trim.trimStartMs)
                     }
+                }
+            }
+
+            latestMusicPlayer?.let { mp ->
+                if (playing && !mp.isPlaying) {
+                    mp.play()
+                } else if (!playing && mp.isPlaying) {
+                    mp.pause()
                 }
             }
 
@@ -200,6 +296,11 @@ fun EditorWorkspaceScreen(
     val seekTo: (Long) -> Unit = { targetMs ->
         val clamped = targetMs.coerceIn(0L, asset.durationMs.coerceAtLeast(0L))
         exoPlayer?.seekTo(clamped)
+        musicPlayer?.let { mp ->
+            val musicDur = mp.duration.takeIf { it > 0L }
+            val musicTarget = if (musicDur != null) clamped % musicDur else clamped
+            mp.seekTo(musicTarget.coerceAtLeast(0L))
+        }
         onUpdatePlaybackState(clamped, exoPlayer?.isPlaying == true)
     }
 
@@ -207,12 +308,15 @@ fun EditorWorkspaceScreen(
         exoPlayer?.let { player ->
             if (player.isPlaying) {
                 player.pause()
+                musicPlayer?.pause()
             } else {
                 val trim = uiState.trimCutConfig
                 if (player.currentPosition < trim.trimStartMs || player.currentPosition >= trim.trimEndMs) {
                     player.seekTo(trim.trimStartMs)
+                    musicPlayer?.seekTo(0L)
                 }
                 player.play()
+                musicPlayer?.play()
             }
         }
     }
@@ -258,14 +362,76 @@ fun EditorWorkspaceScreen(
                             onCancelScan = onCancelScan,
                             onAddManualBox = onAddManualBox,
                             onSetApplyToAll = onSetApplyToAll,
+                            onSelectFaceForEditing = onSelectFaceForEditing,
+                            onResetFaceOverride = onResetFaceOverride,
                             onToggleFaceTrack = onToggleFaceTrack,
                             onSelectMaskMode = onSelectMaskMode,
+                            onSelectMaskShape = onSelectMaskShape,
+                            onMaskSizeScaleChange = onMaskSizeScaleChange,
+                            onMaskFeatherChange = onMaskFeatherChange,
+                            onMaskOpacityChange = onMaskOpacityChange,
                             onBlurIntensityChange = onBlurIntensityChange,
                             onPixelSizeChange = onPixelSizeChange,
                             onSolidColorChange = onSolidColorChange,
                             onEmojiSelected = onEmojiSelected,
                             onPickSticker = onPickSticker,
                             onStickerScaleChange = onStickerScaleChange,
+                            onSliderFinished = onEndContinuousEdit
+                        )
+
+                        EditorTab.ADJUST -> AdjustPanel(
+                            colorGrade = uiState.colorGradeConfig,
+                            onSelectPreset = onSelectColorPreset,
+                            onBrightnessChange = onBrightnessChange,
+                            onContrastChange = onContrastChange,
+                            onSaturationChange = onSaturationChange,
+                            onWarmthChange = onWarmthChange,
+                            onVignetteChange = onVignetteChange,
+                            onReset = onResetColorGrade,
+                            onSliderFinished = onEndContinuousEdit
+                        )
+
+                        EditorTab.TRANSFORM -> TransformPanel(
+                            transform = uiState.transformConfig,
+                            onSelectAspectRatio = onSelectAspectRatio,
+                            onRotate90 = onRotate90,
+                            onToggleFlipH = onToggleFlipH,
+                            onToggleFlipV = onToggleFlipV,
+                            onZoomChange = onZoomScaleChange,
+                            onReset = onResetTransform,
+                            onSliderFinished = onEndContinuousEdit
+                        )
+
+                        EditorTab.SPEED -> SpeedPanel(
+                            uiState = uiState,
+                            onSelectSpeedPreset = onSelectSpeedPreset,
+                            onSpeedSliderChange = onSpeedSliderChange,
+                            onTogglePreservePitch = onTogglePreservePitch,
+                            onSliderFinished = onEndContinuousEdit
+                        )
+
+                        EditorTab.AUDIO -> AudioPanel(
+                            uiState = uiState,
+                            onOriginalVolumeChange = onOriginalVolumeChange,
+                            onToggleMute = onToggleMute,
+                            onPickMusic = onPickMusic,
+                            onRemoveMusic = onRemoveMusic,
+                            onMusicVolumeChange = onMusicVolumeChange,
+                            onToggleLoopMusic = onToggleLoopMusic,
+                            onSliderFinished = onEndContinuousEdit
+                        )
+
+                        EditorTab.TEXT -> TextOverlayPanel(
+                            uiState = uiState,
+                            onAddText = onAddTextOverlay,
+                            onSelectText = { id -> onSelectTextOverlay(id) },
+                            onDeleteText = onDeleteTextOverlay,
+                            onUpdateContent = onUpdateTextContent,
+                            onUpdateStyle = onUpdateTextStyle,
+                            onUpdateFontSize = onUpdateTextFontSize,
+                            onUpdateColor = onUpdateTextColor,
+                            onUpdateOpacity = onUpdateTextOpacity,
+                            onUpdateTiming = onUpdateTextTiming,
                             onSliderFinished = onEndContinuousEdit
                         )
 
@@ -308,12 +474,15 @@ fun EditorWorkspaceScreen(
                         PreviewStage(
                             uiState = uiState,
                             exoPlayer = exoPlayer,
-                            onToggleFaceSelection = onToggleFaceTrack,
+                            onSelectFaceForEditing = { id -> onSelectFaceForEditing(id) },
                             onSelectManualBox = onSelectManualBox,
+                            onSelectTextOverlay = onSelectTextOverlay,
                             onEndContinuousEdit = onEndContinuousEdit,
                             onMoveManualBox = onMoveManualBox,
                             onResizeManualBox = onResizeManualBox,
                             onDeleteManualBox = onDeleteManualBox,
+                            onMoveTextOverlay = onMoveTextOverlay,
+                            onDeleteTextOverlay = onDeleteTextOverlay,
                             onMoveWatermark = onMoveWatermark,
                             modifier = Modifier.weight(1f)
                         )
@@ -347,12 +516,15 @@ fun EditorWorkspaceScreen(
                     PreviewStage(
                         uiState = uiState,
                         exoPlayer = exoPlayer,
-                        onToggleFaceSelection = onToggleFaceTrack,
+                        onSelectFaceForEditing = { id -> onSelectFaceForEditing(id) },
                         onSelectManualBox = onSelectManualBox,
+                        onSelectTextOverlay = onSelectTextOverlay,
                         onEndContinuousEdit = onEndContinuousEdit,
                         onMoveManualBox = onMoveManualBox,
                         onResizeManualBox = onResizeManualBox,
                         onDeleteManualBox = onDeleteManualBox,
+                        onMoveTextOverlay = onMoveTextOverlay,
+                        onDeleteTextOverlay = onDeleteTextOverlay,
                         onMoveWatermark = onMoveWatermark,
                         modifier = Modifier.weight(1f)
                     )
@@ -377,7 +549,7 @@ fun EditorWorkspaceScreen(
                         color = MaterialTheme.colorScheme.surface,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(272.dp)
+                            .height(276.dp)
                     ) {
                         inspectorContent(Modifier.fillMaxSize())
                     }
@@ -385,67 +557,91 @@ fun EditorWorkspaceScreen(
             }
         }
 
-        // 3. Minimal Bottom Navigation Bar (Edge-to-edge safe)
+        // 3. Scrollable 8-Tool Pro Editor Dock (Edge-to-Edge safe)
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-        NavigationBar(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-            windowInsets = WindowInsets.navigationBars
+        ProEditorBottomDock(
+            activeTab = uiState.activeTab,
+            onSelectTab = onSelectTab
+        )
+    }
+}
+
+@Composable
+private fun ProEditorBottomDock(
+    activeTab: EditorTab,
+    onSelectTab: (EditorTab) -> Unit
+) {
+    val primary = MaterialTheme.colorScheme.primary
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        LazyRow(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            NavigationBarItem(
-                selected = uiState.activeTab == EditorTab.FACE_MASK,
-                onClick = { onSelectTab(EditorTab.FACE_MASK) },
-                icon = {
-                    Icon(
-                        imageVector = if (uiState.activeTab == EditorTab.FACE_MASK) Icons.Filled.FaceRetouchingOff else Icons.Outlined.FaceRetouchingOff,
-                        contentDescription = stringResource(R.string.tab_face_mask)
-                    )
-                },
-                label = { Text(stringResource(R.string.tab_face_mask)) },
-                colors = NavigationBarItemDefaults.colors(
-                    selectedIconColor = MaterialTheme.colorScheme.primary,
-                    selectedTextColor = MaterialTheme.colorScheme.primary,
-                    indicatorColor = MaterialTheme.colorScheme.primaryContainer
-                ),
-                modifier = Modifier.testTag("tab_face_mask")
-            )
-
-            NavigationBarItem(
-                selected = uiState.activeTab == EditorTab.WATERMARK,
-                onClick = { onSelectTab(EditorTab.WATERMARK) },
-                icon = {
-                    Icon(
-                        imageVector = if (uiState.activeTab == EditorTab.WATERMARK) Icons.Filled.BrandingWatermark else Icons.Outlined.BrandingWatermark,
-                        contentDescription = stringResource(R.string.tab_watermark)
-                    )
-                },
-                label = { Text(stringResource(R.string.tab_watermark)) },
-                colors = NavigationBarItemDefaults.colors(
-                    selectedIconColor = MaterialTheme.colorScheme.primary,
-                    selectedTextColor = MaterialTheme.colorScheme.primary,
-                    indicatorColor = MaterialTheme.colorScheme.primaryContainer
-                ),
-                modifier = Modifier.testTag("tab_watermark")
-            )
-
-            NavigationBarItem(
-                selected = uiState.activeTab == EditorTab.TRIM_CUT,
-                onClick = { onSelectTab(EditorTab.TRIM_CUT) },
-                icon = {
-                    Icon(
-                        imageVector = if (uiState.activeTab == EditorTab.TRIM_CUT) Icons.Filled.ContentCut else Icons.Outlined.ContentCut,
-                        contentDescription = stringResource(R.string.tab_trim_cut)
-                    )
-                },
-                label = { Text(stringResource(R.string.tab_trim_cut)) },
-                colors = NavigationBarItemDefaults.colors(
-                    selectedIconColor = MaterialTheme.colorScheme.primary,
-                    selectedTextColor = MaterialTheme.colorScheme.primary,
-                    indicatorColor = MaterialTheme.colorScheme.primaryContainer
-                ),
-                modifier = Modifier.testTag("tab_trim_cut")
-            )
+            items(EditorTab.entries) { tab ->
+                val selected = activeTab == tab
+                val label = stringResource(tabLabelRes(tab))
+                Surface(
+                    onClick = { onSelectTab(tab) },
+                    shape = RoundedCornerShape(12.dp),
+                    color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerLow,
+                    border = if (selected) BorderStroke(1.dp, primary.copy(alpha = 0.7f)) else null,
+                    modifier = Modifier
+                        .widthIn(min = 66.dp)
+                        .height(54.dp)
+                        .testTag("tab_${tab.name.lowercase()}")
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            imageVector = tabIcon(tab),
+                            contentDescription = label,
+                            tint = if (selected) primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = label,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                            color = if (selected) primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
         }
     }
+}
+
+private fun tabLabelRes(tab: EditorTab): Int = when (tab) {
+    EditorTab.FACE_MASK -> R.string.tab_face_mask
+    EditorTab.ADJUST -> R.string.tab_adjust
+    EditorTab.TRANSFORM -> R.string.tab_transform
+    EditorTab.SPEED -> R.string.tab_speed
+    EditorTab.AUDIO -> R.string.tab_audio
+    EditorTab.TEXT -> R.string.tab_text
+    EditorTab.WATERMARK -> R.string.tab_watermark
+    EditorTab.TRIM_CUT -> R.string.tab_trim_cut
+}
+
+private fun tabIcon(tab: EditorTab): ImageVector = when (tab) {
+    EditorTab.FACE_MASK -> Icons.Filled.FaceRetouchingOff
+    EditorTab.ADJUST -> Icons.Filled.Tune
+    EditorTab.TRANSFORM -> Icons.Filled.Crop
+    EditorTab.SPEED -> Icons.Filled.Speed
+    EditorTab.AUDIO -> Icons.Filled.LibraryMusic
+    EditorTab.TEXT -> Icons.Filled.TextFields
+    EditorTab.WATERMARK -> Icons.Filled.BrandingWatermark
+    EditorTab.TRIM_CUT -> Icons.Filled.ContentCut
 }
 
 @Composable
